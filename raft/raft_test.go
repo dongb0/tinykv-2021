@@ -64,7 +64,7 @@ func TestProgressLeader2AB(t *testing.T) {
 	propMsg := pb.Message{From: 1, To: 1, MsgType: pb.MessageType_MsgPropose, Entries: []*pb.Entry{{Data: []byte("foo")}}}
 	for i := 0; i < 5; i++ {
 		if pr := r.Prs[r.id]; pr.Match != uint64(i+1) || pr.Next != pr.Match+1 {
-			t.Errorf("unexpected progress %v", pr)
+			t.Errorf("unexpected progress %v, should be:{%d, %d}", pr, i + 1, i + 2)
 		}
 		if err := r.Step(propMsg); err != nil {
 			t.Fatalf("proposal resulted in error: %v", err)
@@ -1478,6 +1478,8 @@ func TestSplitVote2AA(t *testing.T) {
 	// check state
 	// n2 == candidate
 	// n3 == candidate
+	// expect vote for itself in becomeCandidate,
+	// so both peer do not vote for the other
 	sm = nt.peers[2].(*Raft)
 	if sm.State != StateCandidate {
 		t.Errorf("peer 2 state: %s, want %s", sm.State, StateCandidate)
@@ -1569,7 +1571,7 @@ func newNetworkWithConfig(configFunc func(*Config), peers ...stateMachine) *netw
 	size := len(peers)
 	peerAddrs := idsBySize(size)
 
-	npeers := make(map[uint64]stateMachine, size)
+	npeers := make(map[uint64]stateMachine, size)	// ??
 	nstorage := make(map[uint64]*MemoryStorage, size)
 
 	for j, p := range peers {

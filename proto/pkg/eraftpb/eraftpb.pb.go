@@ -340,7 +340,7 @@ func (m *Snapshot) GetMetadata() *SnapshotMetadata {
 }
 
 type Message struct {
-	MsgType              MessageType `protobuf:"varint,1,opt,name=msg_type,json=msgType,proto3,enum=eraftpb.MessageType" json:"msg_type,omitempty"`
+	MsgType              MessageType `protobuf:"varint,1,opt,name=msg_type,json=msgType,proto3,enum=eraftpb.MessageType" json:"msg_type"`
 	To                   uint64      `protobuf:"varint,2,opt,name=to,proto3" json:"to,omitempty"`
 	From                 uint64      `protobuf:"varint,3,opt,name=from,proto3" json:"from,omitempty"`
 	Term                 uint64      `protobuf:"varint,4,opt,name=term,proto3" json:"term,omitempty"`
