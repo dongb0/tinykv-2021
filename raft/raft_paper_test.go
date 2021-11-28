@@ -27,6 +27,7 @@ package raft
 
 import (
 	"fmt"
+	"log"
 	"reflect"
 	"sort"
 	"testing"
@@ -350,6 +351,7 @@ func testNonleadersElectionTimeoutNonconflict(t *testing.T, state StateType) {
 	if g := float64(conflicts) / 1000; g > 0.3 {
 		t.Errorf("probability of conflicts = %v, want <= 0.3", g)
 	}
+	log.Printf("conflicts:%d\n", conflicts)
 }
 
 // TestLeaderStartReplication tests that when receiving client proposals,

@@ -20,6 +20,7 @@ import (
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 	"github.com/sirupsen/logrus"
 	"log"
+	"math/rand"
 )
 
 // None is a placeholder node ID used when there is no leader.
@@ -187,7 +188,7 @@ func newRaft(c *Config) *Raft {
 		msgs: make([]pb.Message, 0),
 		Lead: 0,
 		heartbeatTimeout: c.HeartbeatTick,
-		electionElapsed: c.ElectionTick,
+		electionTimeout: c.ElectionTick,
 		leadTransferee: 0, // for 3A
 		PendingConfIndex: 0,	// for 3A
 	}
@@ -232,8 +233,17 @@ func (r *Raft) tick() {
 	// Your Code Here (2A).
 	r.heartbeatElapsed++
 	r.electionElapsed++
-	if r.heartbeatElapsed >= r.heartbeatTimeout {
-		r.becomeCandidate()
+	switch r.State {
+	case StateFollower, StateCandidate:
+		if r.electionElapsed >= r.electionTimeout + rand.Intn(r.electionTimeout * 2){
+			// why does candidate have higher conflict rate?
+			r.becomeCandidate()
+			r.broadcastVoteRequest()
+		}
+	case StateLeader:
+		if r.heartbeatElapsed >= r.heartbeatTimeout {
+			r.broadcastHeartbeat()
+		}
 	}
 }
 
@@ -253,14 +263,10 @@ func (r *Raft) becomeCandidate() {
 	}
 	r.State = StateCandidate
 	r.Term++
+	r.electionElapsed = 0
 
 	r.Vote = r.id
 	r.votes[r.id] = true	// vote for myself
-	for to := range r.votes {
-		if to != r.id {
-			r.sendVoteRequest(to)
-		}
-	}
 }
 
 // becomeLeader transform this peer's state to leader
@@ -294,6 +300,8 @@ func (r *Raft) Step(m pb.Message) error {
 			r.handleVoteRequest(m)
 		case pb.MessageType_MsgHeartbeat:
 			goto HeartBeat
+		case pb.MessageType_MsgAppend:
+			goto Append
 		}
 	case StateCandidate:
 		switch m.MsgType {
@@ -305,6 +313,8 @@ func (r *Raft) Step(m pb.Message) error {
 			r.handleVoteResponse(m)
 		case pb.MessageType_MsgHeartbeat:
 			goto HeartBeat
+		case pb.MessageType_MsgAppend:
+			goto Append
 		}
 	case StateLeader:
 		switch m.MsgType {
@@ -317,21 +327,32 @@ func (r *Raft) Step(m pb.Message) error {
 		case pb.MessageType_MsgBeat:
 			r.broadcastHeartbeat()
 		case pb.MessageType_MsgHeartbeat:
+			// normally leader do not send heart beat to itself,
+			// but split leader may do this after split recover
 			goto HeartBeat
+		case pb.MessageType_MsgAppend:
+			goto Append
 		}
 	}
 	return nil
 
 HeartBeat:
 	r.handleHeartbeat(m)
+	// TODO(wendongbo): should we move this into handle heartbeat
 	if m.Term > r.Term && r.State != StateFollower{
 		r.becomeFollower(m.Term, m.From)
 	}
 	return nil
 Election:
 	r.becomeCandidate()
+	r.broadcastVoteRequest()
 	if len(r.Prs) == 1 {
 		r.becomeLeader()
+	}
+	return nil
+Append:
+	if m.Term >= r.Term {	// ignore stale append message
+		r.handleAppendEntries(m)
 	}
 	return nil
 }
@@ -339,17 +360,17 @@ Election:
 // handleAppendEntries handle AppendEntries RPC request
 func (r *Raft) handleAppendEntries(m pb.Message) {
 	// Your Code Here (2A).
-	if m.Term > r.Term {
+	if m.Term >= r.Term {
 		r.Term = m.Term
 		r.State = StateFollower
-		return
 	}
-	if m.LogTerm < r.Term || m.From != r.Lead {
+	if m.LogTerm < r.Term || m.From != r.Lead {	// TODO(wendongbo): update logic
 		logrus.Warnf("recv append from id:%d term:%d, curTerm:%d, curLead:%d, reject\n",
 			m.LogTerm, m.From, r.Term, r.Lead)
 		return
 	}
 
+	// TODO(wendongbo): append entries
 
 }
 
@@ -361,7 +382,7 @@ func (r *Raft) handleHeartbeat(m pb.Message) {
 		log.Printf("[warning]recv unexpected heartbeat from id:%d term:%d\n", m.LogTerm, m.From)
 		return
 	}
-	r.electionElapsed = 0
+	//r.electionElapsed = 0
 	r.heartbeatElapsed = 0
 }
 
@@ -381,7 +402,7 @@ func (r *Raft) handleVoteRequest(m pb.Message) {
 	if m.Term < r.Term ||  m.LogTerm < logTerm || m.LogTerm == logTerm && m.Index < r.RaftLog.LastIndex() {	// msg from stale peer
 		msg.Reject = true
 	}
-	if r.Vote == None {	// grant vote
+	if r.Vote == None || r.Vote == m.From {	// if not vote yet or voted for the same node before, grant vote
 		msg.Reject = false
 		r.Vote = m.From
 	}
@@ -439,6 +460,14 @@ func (r *Raft) broadcastHeartbeat(){
 	for to := range r.Prs {
 		if to != r.id {
 			r.sendHeartbeat(to)
+		}
+	}
+}
+
+func (r *Raft) broadcastVoteRequest() {
+	for to := range r.votes {
+		if to != r.id {
+			r.sendVoteRequest(to)
 		}
 	}
 }
