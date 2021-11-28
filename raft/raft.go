@@ -177,10 +177,12 @@ func newRaft(c *Config) *Raft {
 		votes[v] = false
 	}
 	log := newLog(c.Storage)
+	// TODO(wendongbo): use confState?
+	hardState, _, _ := c.Storage.InitialState()
 	node := &Raft{
 		id: c.ID,
-		Term: 0,
-		Vote: 0,
+		Term: hardState.Term,
+		Vote: hardState.Vote,
 		RaftLog: log,
 		Prs: prs,
 		State: StateFollower,
@@ -200,7 +202,23 @@ func newRaft(c *Config) *Raft {
 // current commit index to the given peer. Returns true if a message was sent.
 func (r *Raft) sendAppend(to uint64) bool {
 	// Your Code Here (2A).
-
+	nextIndex := r.Prs[to].Next
+	logTerm, _ := r.RaftLog.Term(nextIndex)
+	ent := make([]*pb.Entry, 0)
+	originEnt := r.RaftLog.entries
+	for i, end := nextIndex, r.RaftLog.LastIndex(); i < end; i++ {
+		ent = append(ent, &originEnt[i])
+	}
+	msg := pb.Message{
+		MsgType: pb.MessageType_MsgAppend,
+		From: r.id,
+		To: to,
+		Term: r.Term,	// do we need it?
+		LogTerm: logTerm,
+		Index: nextIndex,
+		Entries: ent,
+	}
+	r.msgs = append(r.msgs, msg)
 	return false
 }
 
@@ -236,7 +254,7 @@ func (r *Raft) tick() {
 	switch r.State {
 	case StateFollower, StateCandidate:
 		if r.electionElapsed >= r.electionTimeout + rand.Intn(r.electionTimeout * 2){
-			// why does candidate have higher conflict rate?
+			// TODO(wendongbo): why does candidate have higher conflict rate?
 			r.becomeCandidate()
 			r.broadcastVoteRequest()
 		}
@@ -252,7 +270,7 @@ func (r *Raft) becomeFollower(term uint64, lead uint64) {
 	r.Term = term
 	r.Lead = lead
 	r.State = StateFollower
-	r.Vote = 0
+	r.Vote = lead
 }
 
 // becomeCandidate transform this peer's state to candidate
@@ -284,13 +302,7 @@ func (r *Raft) becomeLeader() {
 // on `eraftpb.proto` for what msgs should be handled
 func (r *Raft) Step(m pb.Message) error {
 	// Your Code Here (2A).
-	log.Printf("peer[%d] Step recv:[%s]\n", r.id, m.String())
-	if m.Term > r.Term {
-		err := fmt.Sprintf("peer[%d] term:%d Step msg from peer[%d] term:%d", r.id, r.Term, m.From, m.Term)
-		r.becomeFollower(m.Term, None)
-		log.Println(err)
-		// should we reset timer here?
-	}
+	log.Printf("peer[%d]-term:%d Step recv:[%s]\n", r.id, r.Term, m.String())
 	switch r.State {
 	case StateFollower:
 		switch m.MsgType {
@@ -304,6 +316,12 @@ func (r *Raft) Step(m pb.Message) error {
 			goto Append
 		}
 	case StateCandidate:
+		//if m.Term > r.Term {
+		//	err := fmt.Sprintf("peer[%d] term:%d Step recv stale msg from peer[%d] term:%d", r.id, r.Term, m.From, m.Term)
+		//	r.becomeFollower(m.Term, None)
+		//	log.Println(err)
+		//	// should we reset timer here?
+		//}
 		switch m.MsgType {
 		case pb.MessageType_MsgHup:
 			goto Election
@@ -317,6 +335,12 @@ func (r *Raft) Step(m pb.Message) error {
 			goto Append
 		}
 	case StateLeader:
+		if m.Term > r.Term {
+			err := fmt.Sprintf("peer[%d] term:%d Step recv stale msg from peer[%d] term:%d", r.id, r.Term, m.From, m.Term)
+			r.becomeFollower(m.Term, None)
+			log.Println(err)
+			// should we reset timer here?
+		}
 		switch m.MsgType {
 		case pb.MessageType_MsgPropose: // append logs to leader's entries
 			for _, ent := range m.Entries {
@@ -324,14 +348,19 @@ func (r *Raft) Step(m pb.Message) error {
 				r.Prs[r.id].Match = uint64(len(r.RaftLog.entries) - 1)
 				r.Prs[r.id].Next = uint64(len(r.RaftLog.entries))
 			}
+			r.broadcastAppendEntries()
 		case pb.MessageType_MsgBeat:
 			r.broadcastHeartbeat()
 		case pb.MessageType_MsgHeartbeat:
 			// normally leader do not send heart beat to itself,
 			// but split leader may do this after split recover
 			goto HeartBeat
+		case pb.MessageType_MsgRequestVote:
+			r.handleVoteRequest(m)
 		case pb.MessageType_MsgAppend:
 			goto Append
+		case pb.MessageType_MsgAppendResponse:
+			// TODO(wendongbo): update Prs
 		}
 	}
 	return nil
@@ -379,17 +408,15 @@ func (r *Raft) handleHeartbeat(m pb.Message) {
 	// Your Code Here (2A).
 	log.Printf("peer[%d] handling heartbeat from p[%d] term:%d\n", r.id, m.From, m.Term)
 	if m.LogTerm < r.Term || m.From != r.Lead {
-		log.Printf("[warning]recv unexpected heartbeat from id:%d term:%d\n", m.LogTerm, m.From)
+		logrus.Warnf("recv unexpected heartbeat from id:%d term:%d\n", m.LogTerm, m.From)
 		return
 	}
-	//r.electionElapsed = 0
 	r.heartbeatElapsed = 0
 }
 
 func (r *Raft) handleVoteRequest(m pb.Message) {
 	if m.Term > r.Term {	// reset self status to follower
-		r.Term = m.Term
-		r.State = StateFollower
+		r.becomeFollower(m.Term, None)
 	}
 	msg := pb.Message{
 		MsgType: pb.MessageType_MsgRequestVoteResponse,
@@ -453,6 +480,14 @@ func (r *Raft) initPrs() {
 	for i := range r.Prs {
 		r.Prs[i].Next = r.RaftLog.LastIndex() + 1
 		r.Prs[i].Match = 1 // (TODO:wendongbo) paper said it should be init to 0?
+	}
+}
+
+func (r *Raft) broadcastAppendEntries(){
+	for to := range r.Prs {
+		if to != r.id {
+			r.sendAppend(to)
+		}
 	}
 }
 
