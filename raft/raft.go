@@ -160,6 +160,8 @@ type Raft struct {
 	// value.
 	// (Used in 3A conf change)
 	PendingConfIndex uint64
+
+	rejectCount int
 }
 
 // newRaft return a raft peer with the given config
@@ -206,7 +208,7 @@ func (r *Raft) sendAppend(to uint64) bool {
 	logTerm, _ := r.RaftLog.Term(nextIndex)
 	ent := make([]*pb.Entry, 0)
 	originEnt := r.RaftLog.entries
-	for i, end := nextIndex, r.RaftLog.LastIndex(); i < end; i++ {
+	for i, end := nextIndex, r.RaftLog.LastIndex() + 1; i < end; i++ {
 		ent = append(ent, &originEnt[i])
 	}
 	msg := pb.Message{
@@ -217,6 +219,7 @@ func (r *Raft) sendAppend(to uint64) bool {
 		LogTerm: logTerm,
 		Index: nextIndex,
 		Entries: ent,
+		Commit: r.RaftLog.committed,
 	}
 	r.msgs = append(r.msgs, msg)
 	return false
@@ -230,6 +233,7 @@ func (r *Raft) sendVoteRequest(to uint64) {
 		To: to,
 		Term: r.Term,
 		LogTerm: logTerm,
+		Index: r.RaftLog.LastIndex(),
 	}
 	r.msgs = append(r.msgs, msg)
 }
@@ -255,6 +259,7 @@ func (r *Raft) tick() {
 	case StateFollower, StateCandidate:
 		if r.electionElapsed >= r.electionTimeout + rand.Intn(r.electionTimeout * 2){
 			// TODO(wendongbo): why does candidate have higher conflict rate?
+			// TODO(wendongbo): call Step() instead
 			r.becomeCandidate()
 			r.broadcastVoteRequest()
 		}
@@ -283,6 +288,7 @@ func (r *Raft) becomeCandidate() {
 	r.Term++
 	r.electionElapsed = 0
 
+	r.rejectCount = 0
 	r.Vote = r.id
 	r.votes[r.id] = true	// vote for myself
 }
@@ -292,9 +298,10 @@ func (r *Raft) becomeLeader() {
 	// Your Code Here (2A).
 	// NOTE: Leader should propose a noop entry on its term
 	r.State = StateLeader
-	r.RaftLog.entries = append(r.RaftLog.entries, pb.Entry{ Term: r.Term })
+	r.RaftLog.entries = append(r.RaftLog.entries, pb.Entry{ Term: r.Term , Index: r.RaftLog.LastIndex() + 1})
 	r.initPrs()
 	r.broadcastHeartbeat()
+	r.broadcastAppendEntries()
 	log.Printf("peer[%d] comes to power at term %d\n", r.id, r.Term)
 }
 
@@ -332,11 +339,14 @@ func (r *Raft) Step(m pb.Message) error {
 		case pb.MessageType_MsgHeartbeat:
 			goto HeartBeat
 		case pb.MessageType_MsgAppend:
+			if m.Term >= r.Term {
+				r.becomeFollower(m.Term, None)
+			}
 			goto Append
 		}
 	case StateLeader:
 		if m.Term > r.Term {
-			err := fmt.Sprintf("peer[%d] term:%d Step recv stale msg from peer[%d] term:%d", r.id, r.Term, m.From, m.Term)
+			err := fmt.Sprintf("peer[%d] term:%d Step recv Higher Term msg from peer[%d] term:%d", r.id, r.Term, m.From, m.Term)
 			r.becomeFollower(m.Term, None)
 			log.Println(err)
 			// should we reset timer here?
@@ -355,6 +365,9 @@ func (r *Raft) Step(m pb.Message) error {
 			// normally leader do not send heart beat to itself,
 			// but split leader may do this after split recover
 			goto HeartBeat
+		case pb.MessageType_MsgHeartbeatResponse:
+			// TODO(wendongbo): update Prs
+			r.Prs[m.From].Next = m.Index
 		case pb.MessageType_MsgRequestVote:
 			r.handleVoteRequest(m)
 		case pb.MessageType_MsgAppend:
@@ -389,17 +402,51 @@ Append:
 // handleAppendEntries handle AppendEntries RPC request
 func (r *Raft) handleAppendEntries(m pb.Message) {
 	// Your Code Here (2A).
-	if m.Term >= r.Term {
-		r.Term = m.Term
-		r.State = StateFollower
+	msg := pb.Message{
+		MsgType: pb.MessageType_MsgAppendResponse,
+		From: r.id,
+		To: m.From,
+		Reject: true,
+		Index: r.RaftLog.LastIndex(),
 	}
-	if m.LogTerm < r.Term || m.From != r.Lead {	// TODO(wendongbo): update logic
-		logrus.Warnf("recv append from id:%d term:%d, curTerm:%d, curLead:%d, reject\n",
-			m.LogTerm, m.From, r.Term, r.Lead)
+	defer func() {
+		r.msgs = append(r.msgs, msg)
+	}()
+	if m.Term > r.Term {
+		r.becomeFollower(m.Term, m.From)
+	}
+	if m.Term < r.Term || m.From != r.Lead {
+		// TODO(wendongbo): update logic
+		logrus.Warnf("peer[%d] term:%d recv append from id:%d term:%d [%s], reject append",
+			r.id, r.Term, m.From, m.Term, m.String())
 		return
 	}
 
-	// TODO(wendongbo): append entries
+	//logTerm, _ := r.RaftLog.Term(r.RaftLog.LastIndex())
+	//if m.Index > r.RaftLog.LastIndex() || m.LogTerm != logTerm {
+	//	logrus.Warnf("peer[%d] term:%d recv msg[%s], expect entry index:%d, logTerm:%d",
+	//		r.id, r.Term, m.String(), r.RaftLog.LastIndex(), logTerm)
+	//	msg.Index = r.RaftLog.LastIndex()
+	//	msg.LogTerm = logTerm
+	//	return
+	//}
+
+	// TODO(wendongbo): get entry at m.Index, m.Term,
+	idx := uint64(0)
+	for end := r.RaftLog.LastIndex() + 1; idx < end; idx++ {
+		ent := &r.RaftLog.entries[idx]
+		if ent.Index == m.Index && ent.Term == m.LogTerm {
+			break
+		}
+	}
+	//if m.Entries[0].Term != m.LogTerm || m.Entries[0].Index != m.Index {
+	//	log.Panicf("peer[%d] term:%d append entry index&term not equal [%s]", r.id, r.Term, m.String())
+	//}
+
+	r.RaftLog.entries = r.RaftLog.entries[:idx]
+	for _, ent := range m.Entries {
+		r.RaftLog.entries = append(r.RaftLog.entries, *ent)
+	}
 
 }
 
@@ -407,11 +454,23 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 func (r *Raft) handleHeartbeat(m pb.Message) {
 	// Your Code Here (2A).
 	log.Printf("peer[%d] handling heartbeat from p[%d] term:%d\n", r.id, m.From, m.Term)
-	if m.LogTerm < r.Term || m.From != r.Lead {
-		logrus.Warnf("recv unexpected heartbeat from id:%d term:%d\n", m.LogTerm, m.From)
+	if m.Term < r.Term || m.From != r.Vote {
+		logrus.Warnf("peer[%d] recv unexpected heartbeat from id:%d term:%d\n", r.id, m.From, m.Term)
 		return
 	}
+	r.Lead = m.From
 	r.heartbeatElapsed = 0
+	r.electionElapsed = 0
+	lastIndex := r.RaftLog.LastIndex()
+	logTerm, _ := r.RaftLog.Term(lastIndex)
+	msg := pb.Message{
+		MsgType: pb.MessageType_MsgHeartbeatResponse,
+		From: r.id,
+		To: m.From,
+		LogTerm: logTerm,
+		Index: lastIndex,
+	}
+	r.msgs = append(r.msgs, msg)
 }
 
 func (r *Raft) handleVoteRequest(m pb.Message) {
@@ -428,10 +487,11 @@ func (r *Raft) handleVoteRequest(m pb.Message) {
 	logTerm, _ := r.RaftLog.Term(r.RaftLog.LastIndex())
 	if m.Term < r.Term ||  m.LogTerm < logTerm || m.LogTerm == logTerm && m.Index < r.RaftLog.LastIndex() {	// msg from stale peer
 		msg.Reject = true
-	}
-	if r.Vote == None || r.Vote == m.From {	// if not vote yet or voted for the same node before, grant vote
+	} else if r.Vote == None || r.Vote == m.From {	// if not vote yet or voted for the same node before, grant vote
 		msg.Reject = false
 		r.Vote = m.From
+	} else {
+		logrus.Warnf("unhandle situation in vote request[%s]", m.String())
 	}
 	log.Printf("peer[%d] term:%d handling vote req:[%s], reject:%t\n", r.id, r.Term, m.String(), msg.Reject)
 	r.msgs = append(r.msgs, msg)
@@ -445,20 +505,21 @@ func (r *Raft) handleVoteResponse(m pb.Message) {
 
 	if !m.Reject {
 		r.votes[m.From] = true
+	} else {
+		r.rejectCount++
 	}
-	voteCnt := 0
 	peerNum := len(r.votes)
+	voteCnt := 0
 	for _, v := range r.votes {
 		if v {
 			voteCnt++
 		}
-		if voteCnt >= (peerNum/2) + 1 {
-			break
-		}
 	}
 	log.Printf("peer[%d] gets %d votes at term %d\n", r.id, voteCnt, r.Term)
-	if voteCnt >= (peerNum/2) + 1 {
+	if voteCnt > peerNum / 2 {
 		r.becomeLeader()
+	} else if r.rejectCount > peerNum / 2 {
+		r.becomeFollower(r.Term, None)
 	}
 }
 // handleSnapshot handle Snapshot RPC request
@@ -478,8 +539,9 @@ func (r *Raft) removeNode(id uint64) {
 
 func (r *Raft) initPrs() {
 	for i := range r.Prs {
-		r.Prs[i].Next = r.RaftLog.LastIndex() + 1
-		r.Prs[i].Match = 1 // (TODO:wendongbo) paper said it should be init to 0?
+		//r.Prs[i].Next = r.RaftLog.LastIndex()
+		r.Prs[i].Next = 0	// TODO(wendongbo): obviously a bunch of overhead
+		r.Prs[i].Match = 0 // TODO(wendongbo): paper said it should be init to 0?
 	}
 }
 

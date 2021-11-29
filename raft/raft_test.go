@@ -106,6 +106,10 @@ func TestLeaderCycle2AA(t *testing.T) {
 	n := newNetworkWithConfig(cfg, nil, nil, nil)
 	for campaignerID := uint64(1); campaignerID <= 3; campaignerID++ {
 		n.send(pb.Message{From: campaignerID, To: campaignerID, MsgType: pb.MessageType_MsgHup})
+		/* TODO(wendongbo): peer 3 election has warning, peer 2 do not vote for 3
+		   because its log is more up-to-date
+		   --> peer 2 do not replicate new logs in its term
+		*/
 
 		for _, peer := range n.peers {
 			sm := peer.(*Raft)
@@ -156,6 +160,7 @@ func TestLeaderElectionOverwriteNewerLogs2AB(t *testing.T) {
 	n.send(pb.Message{From: 1, To: 1, MsgType: pb.MessageType_MsgHup})
 	sm1 := n.peers[1].(*Raft)
 	if sm1.State != StateFollower {
+		// TODO(wendongbo): peers[1] should be candidate. origin here is follower
 		t.Errorf("state = %s, want StateFollower", sm1.State)
 	}
 	if sm1.Term != 2 {
