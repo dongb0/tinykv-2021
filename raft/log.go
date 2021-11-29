@@ -59,12 +59,21 @@ type RaftLog struct {
 // to the state that it just commits and applies the latest snapshot.
 func newLog(storage Storage) *RaftLog {
 	// Your Code Here (2A).
+	lastIndex, _ := storage.LastIndex()
+	firstIndex, _ := storage.FirstIndex()
+	entries, err := storage.Entries(firstIndex, lastIndex + 1)
+	if err != nil {
+		log.Warnf("fetch entry error: %s", err.Error())
+	}
+	if len(entries) == 0 {
+		entries = append(entries, pb.Entry{})
+	}
 	log := &RaftLog{
 		storage: storage,
 		committed: 0,
 		applied: 0,
 		stabled: 0,
-		entries: make([]pb.Entry, 1),
+		entries: entries,
 		pendingSnapshot: &pb.Snapshot{
 			//  TODO(wendongbo)：2C
 		},
@@ -102,7 +111,6 @@ func (l *RaftLog) Term(i uint64) (uint64, error) {
 	// Your Code Here (2A).
 	if i >= uint64(len(l.entries)) {
 		log.Panicf("log index out of bound %d", i)
-		//return 0, errors.New("Index out of bound")
 	}
 	return l.entries[i].Term, nil
 }
