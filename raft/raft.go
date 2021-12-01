@@ -204,19 +204,16 @@ func newRaft(c *Config) *Raft {
 // current commit index to the given peer. Returns true if a message was sent.
 func (r *Raft) sendAppend(to uint64) bool {
 	// Your Code Here (2A).
-	nextIndex := r.Prs[to].Next
-	logTerm, _ := r.RaftLog.Term(nextIndex)
-	ent := make([]*pb.Entry, 0)
-	originEnt := r.RaftLog.entries
-	for i, end := nextIndex, r.RaftLog.LastIndex() + 1; i < end; i++ {
-		ent = append(ent, &originEnt[i])
-	}
+	nextIndex := r.Prs[to].Next // why do we initialize next to lastIndex + 1
+	//logTerm, _ := r.RaftLog.Term(nextIndex)
+
+	ent := r.RaftLog.entsAfterIndex(nextIndex)
 	msg := pb.Message{
 		MsgType: pb.MessageType_MsgAppend,
 		From: r.id,
 		To: to,
-		Term: r.Term,	// do we need it?
-		LogTerm: logTerm,
+		Term: r.Term,
+		//LogTerm: logTerm,
 		Index: nextIndex,
 		Entries: ent,
 		Commit: r.RaftLog.committed,
@@ -374,6 +371,12 @@ func (r *Raft) Step(m pb.Message) error {
 			goto Append
 		case pb.MessageType_MsgAppendResponse:
 			// TODO(wendongbo): update Prs
+			if m.Reject {
+				r.Prs[m.From].Next = m.Index
+				r.sendAppend(m.From)
+			} else {
+				// update Prs.Match
+			}
 		}
 	}
 	return nil
@@ -393,61 +396,55 @@ Election:
 	}
 	return nil
 Append:
-	if m.Term >= r.Term {	// ignore stale append message
-		r.handleAppendEntries(m)
-	}
+	// TODO: ignore stale append msg
+	r.handleAppendEntries(m)
 	return nil
 }
 
 // handleAppendEntries handle AppendEntries RPC request
 func (r *Raft) handleAppendEntries(m pb.Message) {
 	// Your Code Here (2A).
+	if m.Term > r.Term { // no logic update Term in follower
+		r.becomeFollower(m.Term, None)
+	}
 	msg := pb.Message{
 		MsgType: pb.MessageType_MsgAppendResponse,
 		From: r.id,
 		To: m.From,
+		Term: r.Term,
 		Reject: true,
 		Index: r.RaftLog.LastIndex(),
 	}
 	defer func() {
 		r.msgs = append(r.msgs, msg)
 	}()
-	if m.Term > r.Term {
-		r.becomeFollower(m.Term, m.From)
-	}
-	if m.Term < r.Term || m.From != r.Lead {
+	if m.Term < r.Term{
 		// TODO(wendongbo): update logic
 		logrus.Warnf("peer[%d] term:%d recv append from id:%d term:%d [%s], reject append",
 			r.id, r.Term, m.From, m.Term, m.String())
 		return
 	}
 
-	//logTerm, _ := r.RaftLog.Term(r.RaftLog.LastIndex())
-	//if m.Index > r.RaftLog.LastIndex() || m.LogTerm != logTerm {
-	//	logrus.Warnf("peer[%d] term:%d recv msg[%s], expect entry index:%d, logTerm:%d",
-	//		r.id, r.Term, m.String(), r.RaftLog.LastIndex(), logTerm)
-	//	msg.Index = r.RaftLog.LastIndex()
-	//	msg.LogTerm = logTerm
-	//	return
-	//}
-
 	// TODO(wendongbo): get entry at m.Index, m.Term,
-	idx := uint64(0)
-	for end := r.RaftLog.LastIndex() + 1; idx < end; idx++ {
+	idx := 0
+	end := len(r.RaftLog.entries)
+	for ; idx < end; idx++ {
 		ent := &r.RaftLog.entries[idx]
-		if ent.Index == m.Index && ent.Term == m.LogTerm {
+		if ent.Index == m.Index /* && ent.Term == m.LogTerm*/{
 			break
 		}
 	}
-	//if m.Entries[0].Term != m.LogTerm || m.Entries[0].Index != m.Index {
-	//	log.Panicf("peer[%d] term:%d append entry index&term not equal [%s]", r.id, r.Term, m.String())
-	//}
 
-	r.RaftLog.entries = r.RaftLog.entries[:idx]
-	for _, ent := range m.Entries {
-		r.RaftLog.entries = append(r.RaftLog.entries, *ent)
+	// accept entries
+	// TODO: this will erase all logs if append msg Index not set
+	if idx != end {
+		r.RaftLog.entries = r.RaftLog.entries[:idx]
+		for _, ent := range m.Entries {
+			r.RaftLog.entries = append(r.RaftLog.entries, *ent)
+		}
+		msg.Reject = false
+		msg.Index = r.RaftLog.LastIndex()
 	}
-
 }
 
 // handleHeartbeat handle Heartbeat RPC request
@@ -461,16 +458,16 @@ func (r *Raft) handleHeartbeat(m pb.Message) {
 	r.Lead = m.From
 	r.heartbeatElapsed = 0
 	r.electionElapsed = 0
-	lastIndex := r.RaftLog.LastIndex()
-	logTerm, _ := r.RaftLog.Term(lastIndex)
-	msg := pb.Message{
-		MsgType: pb.MessageType_MsgHeartbeatResponse,
-		From: r.id,
-		To: m.From,
-		LogTerm: logTerm,
-		Index: lastIndex,
-	}
-	r.msgs = append(r.msgs, msg)
+	//lastIndex := r.RaftLog.LastIndex()
+	//logTerm, _ := r.RaftLog.Term(lastIndex)
+	//msg := pb.Message{
+	//	MsgType: pb.MessageType_MsgHeartbeatResponse,
+	//	From: r.id,
+	//	To: m.From,
+	//	LogTerm: logTerm,
+	//	Index: lastIndex,
+	//}
+	//r.msgs = append(r.msgs, msg)
 }
 
 func (r *Raft) handleVoteRequest(m pb.Message) {
@@ -540,8 +537,8 @@ func (r *Raft) removeNode(id uint64) {
 func (r *Raft) initPrs() {
 	for i := range r.Prs {
 		//r.Prs[i].Next = r.RaftLog.LastIndex()
-		r.Prs[i].Next = 0	// TODO(wendongbo): obviously a bunch of overhead
-		r.Prs[i].Match = 0 // TODO(wendongbo): paper said it should be init to 0?
+		r.Prs[i].Next = r.RaftLog.LastIndex() + 1	// TODO(wendongbo): obviously a bunch of overhead
+		r.Prs[i].Match = 1 // TODO(wendongbo): paper said it should be init to 0?
 	}
 }
 
