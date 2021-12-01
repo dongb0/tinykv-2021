@@ -15,6 +15,7 @@
 package raft
 
 import (
+	"fmt"
 	"github.com/pingcap-incubator/tinykv/log"
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 )
@@ -103,14 +104,44 @@ func (l *RaftLog) nextEnts() (ents []pb.Entry) {
 // LastIndex return the last index of the log entries
 func (l *RaftLog) LastIndex() uint64 {
 	// Your Code Here (2A).
-	return uint64(len(l.entries) - 1)
+	if len(l.entries) == 0 {
+		return 0
+	}
+	last := len(l.entries) - 1
+	return l.entries[last].Index
 }
 
 // Term return the term of the entry in the given index
 func (l *RaftLog) Term(i uint64) (uint64, error) {
 	// Your Code Here (2A).
-	if i >= uint64(len(l.entries)) {
-		log.Panicf("log index out of bound %d", i)
+	for _, ent := range l.entries {
+		if ent.Index == i {
+			return ent.Term, nil
+		}
 	}
-	return l.entries[i].Term, nil
+	return l.entries[l.LastIndex()].Term, fmt.Errorf("log index out of bound at %d(max:%d)", i, l.LastIndex())
+}
+
+// entsAfterIndex return entries after given index,
+// if index == 0, return all
+func (l *RaftLog) entsAfterIndex(index uint64) []*pb.Entry {
+	res := make([]*pb.Entry, 0)
+	if len(l.entries) == 0 {
+		return res
+	}
+	if index < l.entries[0].Index {
+		for i, end := 0, len(l.entries); i < end; i++ {
+			res = append(res, &l.entries[i])
+		}
+		return res
+	}
+	begin := 0
+	end := len(l.entries)
+	for ; begin < end && l.entries[begin].Index != index; begin++ {
+
+	}
+	for ; begin < end; begin++ {
+		res = append(res, &l.entries[begin])
+	}
+	return res
 }
