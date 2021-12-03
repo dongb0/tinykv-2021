@@ -204,19 +204,19 @@ func newRaft(c *Config) *Raft {
 // current commit index to the given peer. Returns true if a message was sent.
 func (r *Raft) sendAppend(to uint64) bool {
 	// Your Code Here (2A).
-	nextIndex := r.Prs[to].Next // why do we initialize next to lastIndex + 1
-	logTerm, _ := r.RaftLog.Term(nextIndex)
+	prevIndex := r.Prs[to].Next - 1 // why do we initialize next to lastIndex + 1
+	logTerm, _ := r.RaftLog.Term(prevIndex)
 	// TODO(wendongbo): if we don't find corresponding term,
 	// append definitely will fail, why not just return first/last entry
 
-	ent := r.RaftLog.entsAfterIndex(nextIndex)
+	ent := r.RaftLog.entsAfterIndex(prevIndex + 1)
 	msg := pb.Message{
 		MsgType: pb.MessageType_MsgAppend,
 		From: r.id,
 		To: to,
 		Term: r.Term,
 		LogTerm: logTerm,
-		Index: nextIndex,
+		Index: prevIndex,
 		Entries: ent,
 		Commit: r.RaftLog.committed,
 	}
@@ -300,10 +300,14 @@ func (r *Raft) becomeLeader() {
 	r.State = StateLeader
 	r.RaftLog.entries = append(r.RaftLog.entries, pb.Entry{ Term: r.Term , Index: r.RaftLog.LastIndex() + 1})
 	r.initPrs()
+	log.Printf("peer[%d] comes to power at term %d\n", r.id, r.Term)
+}
+
+// sends heartbeat and append log entries
+func (r *Raft) leaderResponsibility(){
 	r.broadcastHeartbeat()
 	// TODO(wendongbo): if we send entries in heartbeat, then no need broadcastEntries later
 	r.broadcastAppendEntries()
-	log.Printf("peer[%d] comes to power at term %d\n", r.id, r.Term)
 }
 
 // Step the entrance of handle message, see `MessageType`
@@ -387,16 +391,16 @@ func (r *Raft) Step(m pb.Message) error {
 			if m.Reject {
 				r.sendAppend(m.From)
 			} else {
-				if m.Index > r.Prs[m.From].Match {
-					r.Prs[m.From].Match = m.Index
-				}
+				// update match index
+				r.Prs[m.From].Match = max(r.Prs[m.From].Match, m.Index - 1)
 				newCommit := r.checkCommitAt(r.Prs[m.From].Match)
 				if m.Commit < r.RaftLog.committed {
 					r.sendAppend(m.From)
 				}
 				// TODO(wendongbo): this can be optimize, reduce msg sending
 				if newCommit {
-					r.broadcastHeartbeat()
+					//r.broadcastHeartbeat()
+					r.broadcastAppendEntries()
 				}
 			}
 		}
@@ -404,22 +408,26 @@ func (r *Raft) Step(m pb.Message) error {
 	return nil
 
 HeartBeat:
-	if m.Term >= r.Term && r.State != StateFollower {
+	if m.Term >= r.Term/* && r.State != StateFollower */{
 		r.becomeFollower(m.Term, m.From)
 	}
 	r.handleHeartbeat(m)
 	// TODO(wendongbo): should we move this into handle heartbeat
+	return nil
+Append:
+	// TODO: ignore stale append msg
+	if m.Term >= r.Term {
+		r.becomeFollower(m.Term, m.From)
+	}
+	r.handleAppendEntries(m)
 	return nil
 Election:
 	r.becomeCandidate()
 	r.broadcastVoteRequest()
 	if len(r.Prs) == 1 {
 		r.becomeLeader()
+		r.leaderResponsibility()
 	}
-	return nil
-Append:
-	// TODO: ignore stale append msg
-	r.handleAppendEntries(m)
 	return nil
 }
 
@@ -427,10 +435,10 @@ Append:
 // handleAppendEntries handle AppendEntries RPC request
 func (r *Raft) handleAppendEntries(m pb.Message) {
 	// Your Code Here (2A).
-	//if m.Term > r.Term { // no logic update Term in follower
-	//	r.becomeFollower(m.Term, None)
-	//}
-	r.becomeFollower(m.Term, m.From)
+	if m.Term > r.Term { // no logic update Term in follower
+		r.becomeFollower(m.Term, None)
+	}
+	//r.becomeFollower(m.Term, m.From)
 	msg := pb.Message{
 		MsgType: pb.MessageType_MsgAppendResponse,
 		From: r.id,
@@ -452,7 +460,7 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 	matchIndex, found := r.RaftLog.findMatchEntry(m.Index, m.LogTerm)
 	// accept entries
 	if found {
-		r.followerAppendEntries(matchIndex, &m)
+		r.followerAppendEntries(matchIndex + 1, &m)
 		end := maxInt(len(m.Entries) - 1, 0)
 		endEntryIdx := m.Index
 		if len(m.Entries) != 0 {
@@ -462,10 +470,11 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 		r.updateCommit(min(m.Commit, endEntryIdx))
 
 		msg.Reject = false
-		msg.Index = r.RaftLog.LastIndex()
-		msg.Commit = m.Commit
+		msg.Index = r.RaftLog.LastIndex() + 1
+		msg.Commit = r.RaftLog.committed
 	} else {
-		msg.Index = r.RaftLog.findEntryIndexByTerm(m.LogTerm)
+		//msg.Index = r.RaftLog.findEntryIndexByTerm(m.LogTerm)
+		msg.Index = m.Index
 	}
 }
 
@@ -480,7 +489,7 @@ func (r *Raft) handleHeartbeat(m pb.Message) {
 	r.Lead = m.From // TODO(wendongbo): remove this assignment?
 	r.heartbeatElapsed = 0
 	r.electionElapsed = 0
-	r.updateCommit(m.Commit)
+	//r.updateCommit(m.Commit)
 
 	lastIndex := r.RaftLog.LastIndex()
 	//logTerm, _ := r.RaftLog.Term(lastIndex)
@@ -539,6 +548,7 @@ func (r *Raft) handleVoteResponse(m pb.Message) {
 	log.Printf("peer[%d] gets %d votes at term %d\n", r.id, voteCnt, r.Term)
 	if voteCnt > peerNum / 2 {
 		r.becomeLeader()
+		r.leaderResponsibility()
 	} else if r.rejectCount > peerNum / 2 {
 		r.becomeFollower(r.Term, None)
 	}
@@ -608,7 +618,7 @@ func (r *Raft) checkCommitAt(index uint64) (newCommit bool){
 	}
 	logrus.Infof("leader[%d] term %d checking commit status at index[%d], replica count:%d",
 		r.id, r.Term, index, count)
-	if count > len(r.Prs) / 2 && r.RaftLog.committed < index{
+	if count > len(r.Prs) / 2 && r.RaftLog.committed < index {
 		r.updateCommit(index)
 		logrus.Infof("leader[%d] term:%d commit entry at index %d", r.id, r.Term, index)
 		return true
@@ -623,6 +633,7 @@ func (r *Raft) updateCommit(committed uint64) {
 	}
 }
 
+// TODO(wendongbo): move into log.go?
 func (r *Raft) followerAppendEntries(matchIndex int, m *pb.Message){
 	if len(m.Entries) == 0 {
 		return
@@ -634,7 +645,7 @@ func (r *Raft) followerAppendEntries(matchIndex int, m *pb.Message){
 			break
 		}
 	}
-	// resolve follower conflict entries (if any)
+	// resolve follower conflict entries
 	r.RaftLog.entries = r.RaftLog.entries[:matchIndex]
 	for end := len(m.Entries); j < end; j++ {
 		r.RaftLog.entries = append(r.RaftLog.entries, *m.Entries[j])
