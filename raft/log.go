@@ -67,7 +67,7 @@ func newLog(storage Storage) *RaftLog {
 		log.Warnf("fetch entry error: %s", err.Error())
 	}
 	if len(entries) == 0 {
-		entries = append(entries, pb.Entry{})
+		//entries = append(entries, pb.Entry{})
 	}
 	log := &RaftLog{
 		storage: storage,
@@ -92,13 +92,20 @@ func (l *RaftLog) maybeCompact() {
 // unstableEntries return all the unstable entries
 func (l *RaftLog) unstableEntries() []pb.Entry {
 	// Your Code Here (2A).
-	return l.entries[l.stabled + 1:]
+	return l.entries[:]
 }
 
 // nextEnts returns all the committed but not applied entries
 func (l *RaftLog) nextEnts() (ents []pb.Entry) {
 	// Your Code Here (2A).
-	return l.entries[l.applied:l.committed + 1]
+	begin, end := 0, len(l.entries)
+	for ; begin != end && l.entries[begin].Index <= l.applied; begin++ {
+
+	}
+	for ; begin != end && l.entries[begin].Index <= l.committed; begin++ {
+		ents = append(ents, l.entries[begin])
+	}
+	return ents
 }
 
 // LastIndex return the last index of the log entries
@@ -114,6 +121,9 @@ func (l *RaftLog) LastIndex() uint64 {
 // Term return the term of the entry in the given index
 func (l *RaftLog) Term(i uint64) (uint64, error) {
 	// Your Code Here (2A).
+	if i == 0 {
+		return 0, nil
+	}
 	for _, ent := range l.entries {
 		if ent.Index == i {
 			return ent.Term, nil

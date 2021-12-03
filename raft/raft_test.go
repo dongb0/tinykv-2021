@@ -106,11 +106,6 @@ func TestLeaderCycle2AA(t *testing.T) {
 	n := newNetworkWithConfig(cfg, nil, nil, nil)
 	for campaignerID := uint64(1); campaignerID <= 3; campaignerID++ {
 		n.send(pb.Message{From: campaignerID, To: campaignerID, MsgType: pb.MessageType_MsgHup})
-		/* TODO(wendongbo): peer 3 election has warning, peer 2 do not vote for 3
-		   because its log is more up-to-date
-		   --> peer 2 do not replicate new logs in its term
-		*/
-
 		for _, peer := range n.peers {
 			sm := peer.(*Raft)
 			if sm.id == campaignerID && sm.State != StateLeader {
@@ -496,7 +491,7 @@ func TestSingleNodeCandidate2AA(t *testing.T) {
 
 func TestOldMessages2AB(t *testing.T) {
 	tt := newNetwork(nil, nil, nil)
-	// make 0 leader @ term 3
+	// make 0 leader @ term 3	// TODO(wendongbo): update raft ignore stale msg logic
 	tt.send(pb.Message{From: 1, To: 1, MsgType: pb.MessageType_MsgHup})
 	tt.send(pb.Message{From: 2, To: 2, MsgType: pb.MessageType_MsgHup})
 	tt.send(pb.Message{From: 1, To: 1, MsgType: pb.MessageType_MsgHup})
