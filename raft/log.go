@@ -119,7 +119,7 @@ func (l *RaftLog) LastIndex() uint64 {
 }
 
 // Term return the term of the entry in the given index
-func (l *RaftLog) Term(i uint64) (uint64, error) {
+func (l *RaftLog) Term(i uint64) (term uint64, err error) {
 	// Your Code Here (2A).
 	if i == 0 {
 		return 0, nil
@@ -129,7 +129,14 @@ func (l *RaftLog) Term(i uint64) (uint64, error) {
 			return ent.Term, nil
 		}
 	}
-	return l.entries[l.LastIndex()].Term, fmt.Errorf("log index out of bound at %d(max:%d)", i, l.LastIndex())
+	// TODO(wendongbo): decide always return last or choose from first & last
+	//if i < l.entries[0].Index {
+	//	term = l.entries[0].Term
+	//} else {
+	//	term = l.entries[len(l.entries) - 1].Term
+	//}
+	term = l.entries[len(l.entries)-1].Term
+	return term, fmt.Errorf("log index out of bound at %d(max:%d)", i, l.LastIndex())
 }
 
 // entsAfterIndex return entries after given index,
@@ -154,4 +161,32 @@ func (l *RaftLog) entsAfterIndex(index uint64) []*pb.Entry {
 		res = append(res, &l.entries[begin])
 	}
 	return res
+}
+
+// return matchIndex(entry array index, begin with 0)
+func (l *RaftLog) findMatchEntry(index, logTerm uint64) (matchIndex int, found bool) {
+	if index == 0 {
+		return 0, true
+	}
+	idx, end := 0, len(l.entries)
+	for ; idx < end; idx++ {
+		ent := l.entries[idx]
+		if ent.Index == index && ent.Term == logTerm {
+			return idx, true
+		}
+	}
+	return idx, false
+}
+
+// findEntryIndexByTerm returns first entry index at term logTerm
+// return 0 if logTerm not exist
+func (l *RaftLog) findEntryIndexByTerm(logTerm uint64) uint64 {
+
+	// TODO(wendongbo): binary search
+	for i, end := 0, len(l.entries); i < end; i++ {
+		if l.entries[i].Term  == logTerm {
+			return l.entries[i].Index
+		}
+	}
+	return 0
 }

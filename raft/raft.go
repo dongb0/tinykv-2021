@@ -205,7 +205,9 @@ func newRaft(c *Config) *Raft {
 func (r *Raft) sendAppend(to uint64) bool {
 	// Your Code Here (2A).
 	nextIndex := r.Prs[to].Next // why do we initialize next to lastIndex + 1
-	//logTerm, _ := r.RaftLog.Term(nextIndex)
+	logTerm, _ := r.RaftLog.Term(nextIndex)
+	// TODO(wendongbo): if we don't find corresponding term,
+	// append definitely will fail, why not just return first/last entry
 
 	ent := r.RaftLog.entsAfterIndex(nextIndex)
 	msg := pb.Message{
@@ -213,7 +215,7 @@ func (r *Raft) sendAppend(to uint64) bool {
 		From: r.id,
 		To: to,
 		Term: r.Term,
-		//LogTerm: logTerm,
+		LogTerm: logTerm,
 		Index: nextIndex,
 		Entries: ent,
 		Commit: r.RaftLog.committed,
@@ -392,6 +394,7 @@ func (r *Raft) Step(m pb.Message) error {
 				if m.Commit < r.RaftLog.committed {
 					r.sendAppend(m.From)
 				}
+				// TODO(wendongbo): this can be optimize, reduce msg sending
 				if newCommit {
 					r.broadcastHeartbeat()
 				}
@@ -406,7 +409,6 @@ HeartBeat:
 	}
 	r.handleHeartbeat(m)
 	// TODO(wendongbo): should we move this into handle heartbeat
-
 	return nil
 Election:
 	r.becomeCandidate()
@@ -421,12 +423,14 @@ Append:
 	return nil
 }
 
+// TODO(wenodngbo): handleXXX function could use pointer to reduce memory copy
 // handleAppendEntries handle AppendEntries RPC request
 func (r *Raft) handleAppendEntries(m pb.Message) {
 	// Your Code Here (2A).
-	if m.Term > r.Term { // no logic update Term in follower
-		r.becomeFollower(m.Term, None)
-	}
+	//if m.Term > r.Term { // no logic update Term in follower
+	//	r.becomeFollower(m.Term, None)
+	//}
+	r.becomeFollower(m.Term, m.From)
 	msg := pb.Message{
 		MsgType: pb.MessageType_MsgAppendResponse,
 		From: r.id,
@@ -438,42 +442,30 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 	defer func() {
 		r.msgs = append(r.msgs, msg)
 	}()
-	if m.Term < r.Term{
+	if m.Term < r.Term {
 		// TODO(wendongbo): update logic
 		logrus.Warnf("peer[%d] term:%d recv append from id:%d term:%d [%s], reject append",
 			r.id, r.Term, m.From, m.Term, m.String())
 		return
 	}
 
-	// TODO(wendongbo): get entry at m.Index, m.Term,
-	idx := 0
-	end := len(r.RaftLog.entries)
-	for ; idx < end; idx++ {
-		ent := &r.RaftLog.entries[idx]
-		if ent.Index == m.Index /* && ent.Term == m.LogTerm*/{
-			break
-		}
-	}
-
+	matchIndex, found := r.RaftLog.findMatchEntry(m.Index, m.LogTerm)
 	// accept entries
-	// TODO: this will erase all logs if append msg Index not set
-	if end == 0 || idx != end { // end == 0 means log is null, idx != end means find a matched entry
-		r.RaftLog.entries = r.RaftLog.entries[:idx]
-		for _, ent := range m.Entries {
-			r.RaftLog.entries = append(r.RaftLog.entries, *ent)
+	if found {
+		r.followerAppendEntries(matchIndex, &m)
+		end := maxInt(len(m.Entries) - 1, 0)
+		endEntryIdx := m.Index
+		if len(m.Entries) != 0 {
+			endEntryIdx = m.Entries[end].Index
 		}
-		//if m.Commit >= r.RaftLog.committed {
-		//	logrus.Infof("peer[%d] term:%d commit at %d", r.id, r.Term, m.Commit)
-		//	r.RaftLog.committed = m.Commit
-		//} else {
-		//	logrus.Warnf("peer[%d] term:%d recv stale commit index %d", r.id, r.Term, m.Index)
-		//}
-		r.updateCommit(m.Commit)
+		// set commit index to min(m.committed, index of last message entry)
+		r.updateCommit(min(m.Commit, endEntryIdx))
+
 		msg.Reject = false
 		msg.Index = r.RaftLog.LastIndex()
 		msg.Commit = m.Commit
-		
-		//r.RaftLog.committed = m.Commit
+	} else {
+		msg.Index = r.RaftLog.findEntryIndexByTerm(m.LogTerm)
 	}
 }
 
@@ -485,16 +477,11 @@ func (r *Raft) handleHeartbeat(m pb.Message) {
 		logrus.Warnf("peer[%d] recv unexpected heartbeat from id:%d term:%d\n", r.id, m.From, m.Term)
 		return
 	}
-	r.Lead = m.From
+	r.Lead = m.From // TODO(wendongbo): remove this assignment?
 	r.heartbeatElapsed = 0
 	r.electionElapsed = 0
-
-	// TODO(wendongbo): flush commit here
 	r.updateCommit(m.Commit)
-	//if r.RaftLog.committed < m.Commit {
-	//	r.RaftLog.committed = m.Commit
-	//}
-	//  TODO(wendongbo): heart beat response
+
 	lastIndex := r.RaftLog.LastIndex()
 	//logTerm, _ := r.RaftLog.Term(lastIndex)
 	msg := pb.Message{
@@ -619,7 +606,7 @@ func (r *Raft) checkCommitAt(index uint64) (newCommit bool){
 			count++
 		}
 	}
-	logrus.Infof("leader[%d] term %d checking commit status at %d, count is %d",
+	logrus.Infof("leader[%d] term %d checking commit status at index[%d], replica count:%d",
 		r.id, r.Term, index, count)
 	if count > len(r.Prs) / 2 && r.RaftLog.committed < index{
 		r.updateCommit(index)
@@ -629,8 +616,27 @@ func (r *Raft) checkCommitAt(index uint64) (newCommit bool){
 	return false
 }
 
+// TODO(wendongbo): update
 func (r *Raft) updateCommit(committed uint64) {
 	if committed > r.RaftLog.committed {
 		r.RaftLog.committed = min(committed, r.RaftLog.LastIndex())
+	}
+}
+
+func (r *Raft) followerAppendEntries(matchIndex int, m *pb.Message){
+	if len(m.Entries) == 0 {
+		return
+	}
+	j := 0
+	// skip match entry
+	for end := len(r.RaftLog.entries); matchIndex < end; matchIndex, j = matchIndex+1, j+1 {
+		if r.RaftLog.entries[matchIndex].Index != m.Entries[j].Index || r.RaftLog.entries[matchIndex].Term != m.Entries[j].Term {
+			break
+		}
+	}
+	// resolve follower conflict entries (if any)
+	r.RaftLog.entries = r.RaftLog.entries[:matchIndex]
+	for end := len(m.Entries); j < end; j++ {
+		r.RaftLog.entries = append(r.RaftLog.entries, *m.Entries[j])
 	}
 }
