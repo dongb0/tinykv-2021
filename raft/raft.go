@@ -243,6 +243,7 @@ func (r *Raft) sendHeartbeat(to uint64) {
 		From: r.id,
 		To: to,
 		Term: r.Term,
+		Commit: r.RaftLog.committed,
 	}
 	r.msgs = append(r.msgs, msg)
 }
@@ -298,6 +299,7 @@ func (r *Raft) becomeLeader() {
 	r.RaftLog.entries = append(r.RaftLog.entries, pb.Entry{ Term: r.Term , Index: r.RaftLog.LastIndex() + 1})
 	r.initPrs()
 	r.broadcastHeartbeat()
+	// TODO(wendongbo): if we send entries in heartbeat, then no need broadcastEntries later
 	r.broadcastAppendEntries()
 	log.Printf("peer[%d] comes to power at term %d\n", r.id, r.Term)
 }
@@ -351,11 +353,17 @@ func (r *Raft) Step(m pb.Message) error {
 		switch m.MsgType {
 		case pb.MessageType_MsgPropose: // append logs to leader's entries
 			for _, ent := range m.Entries {
+				ent.Term = r.Term
+				ent.Index = r.RaftLog.LastIndex() + 1
 				r.RaftLog.entries = append(r.RaftLog.entries, *ent)
-				r.Prs[r.id].Match = uint64(len(r.RaftLog.entries) - 1)
-				r.Prs[r.id].Next = uint64(len(r.RaftLog.entries))
+				r.Prs[r.id].Match = r.RaftLog.LastIndex()
+				r.Prs[r.id].Next = r.RaftLog.LastIndex() + 1
 			}
-			r.broadcastAppendEntries()
+			if len(r.Prs) != 1 {
+				r.broadcastAppendEntries()
+			} else {
+				r.RaftLog.committed = r.RaftLog.LastIndex()
+			}
 		case pb.MessageType_MsgBeat:
 			r.broadcastHeartbeat()
 		case pb.MessageType_MsgHeartbeat:
@@ -363,30 +371,42 @@ func (r *Raft) Step(m pb.Message) error {
 			// but split leader may do this after split recover
 			goto HeartBeat
 		case pb.MessageType_MsgHeartbeatResponse:
-			// TODO(wendongbo): update Prs
-			r.Prs[m.From].Next = m.Index
+			lastIndex := r.RaftLog.LastIndex()
+			if lastIndex > m.Index {
+				r.sendAppend(m.From)
+			}
 		case pb.MessageType_MsgRequestVote:
 			r.handleVoteRequest(m)
 		case pb.MessageType_MsgAppend:
 			goto Append
 		case pb.MessageType_MsgAppendResponse:
 			// TODO(wendongbo): update Prs
+			r.Prs[m.From].Next = m.Index
 			if m.Reject {
-				r.Prs[m.From].Next = m.Index
 				r.sendAppend(m.From)
 			} else {
-				// update Prs.Match
+				if m.Index > r.Prs[m.From].Match {
+					r.Prs[m.From].Match = m.Index
+				}
+				newCommit := r.checkCommitAt(r.Prs[m.From].Match)
+				if m.Commit < r.RaftLog.committed {
+					r.sendAppend(m.From)
+				}
+				if newCommit {
+					r.broadcastHeartbeat()
+				}
 			}
 		}
 	}
 	return nil
 
 HeartBeat:
-	r.handleHeartbeat(m)
-	// TODO(wendongbo): should we move this into handle heartbeat
-	if m.Term > r.Term && r.State != StateFollower{
+	if m.Term >= r.Term && r.State != StateFollower {
 		r.becomeFollower(m.Term, m.From)
 	}
+	r.handleHeartbeat(m)
+	// TODO(wendongbo): should we move this into handle heartbeat
+
 	return nil
 Election:
 	r.becomeCandidate()
@@ -437,13 +457,23 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 
 	// accept entries
 	// TODO: this will erase all logs if append msg Index not set
-	if idx != end {
+	if end == 0 || idx != end { // end == 0 means log is null, idx != end means find a matched entry
 		r.RaftLog.entries = r.RaftLog.entries[:idx]
 		for _, ent := range m.Entries {
 			r.RaftLog.entries = append(r.RaftLog.entries, *ent)
 		}
+		//if m.Commit >= r.RaftLog.committed {
+		//	logrus.Infof("peer[%d] term:%d commit at %d", r.id, r.Term, m.Commit)
+		//	r.RaftLog.committed = m.Commit
+		//} else {
+		//	logrus.Warnf("peer[%d] term:%d recv stale commit index %d", r.id, r.Term, m.Index)
+		//}
+		r.updateCommit(m.Commit)
 		msg.Reject = false
 		msg.Index = r.RaftLog.LastIndex()
+		msg.Commit = m.Commit
+		
+		//r.RaftLog.committed = m.Commit
 	}
 }
 
@@ -451,23 +481,30 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 func (r *Raft) handleHeartbeat(m pb.Message) {
 	// Your Code Here (2A).
 	log.Printf("peer[%d] handling heartbeat from p[%d] term:%d\n", r.id, m.From, m.Term)
-	if m.Term < r.Term || m.From != r.Vote {
+	if m.Term < r.Term {
 		logrus.Warnf("peer[%d] recv unexpected heartbeat from id:%d term:%d\n", r.id, m.From, m.Term)
 		return
 	}
 	r.Lead = m.From
 	r.heartbeatElapsed = 0
 	r.electionElapsed = 0
-	//lastIndex := r.RaftLog.LastIndex()
-	//logTerm, _ := r.RaftLog.Term(lastIndex)
-	//msg := pb.Message{
-	//	MsgType: pb.MessageType_MsgHeartbeatResponse,
-	//	From: r.id,
-	//	To: m.From,
-	//	LogTerm: logTerm,
-	//	Index: lastIndex,
+
+	// TODO(wendongbo): flush commit here
+	r.updateCommit(m.Commit)
+	//if r.RaftLog.committed < m.Commit {
+	//	r.RaftLog.committed = m.Commit
 	//}
-	//r.msgs = append(r.msgs, msg)
+	//  TODO(wendongbo): heart beat response
+	lastIndex := r.RaftLog.LastIndex()
+	//logTerm, _ := r.RaftLog.Term(lastIndex)
+	msg := pb.Message{
+		MsgType: pb.MessageType_MsgHeartbeatResponse,
+		From: r.id,
+		To: m.From,
+		//LogTerm: logTerm,
+		Index: lastIndex,
+	}
+	r.msgs = append(r.msgs, msg)
 }
 
 func (r *Raft) handleVoteRequest(m pb.Message) {
@@ -536,9 +573,14 @@ func (r *Raft) removeNode(id uint64) {
 
 func (r *Raft) initPrs() {
 	for i := range r.Prs {
-		//r.Prs[i].Next = r.RaftLog.LastIndex()
-		r.Prs[i].Next = r.RaftLog.LastIndex() + 1	// TODO(wendongbo): obviously a bunch of overhead
-		r.Prs[i].Match = 1 // TODO(wendongbo): paper said it should be init to 0?
+		r.Prs[i].Next = r.RaftLog.LastIndex() + 1
+		// TODO(wendongbo): paper said it should be init to 0?
+		if r.State == StateLeader {
+			r.Prs[i].Match = r.RaftLog.LastIndex()
+		} else {
+			r.Prs[i].Match = 0
+		}
+
 	}
 }
 
@@ -563,5 +605,32 @@ func (r *Raft) broadcastVoteRequest() {
 		if to != r.id {
 			r.sendVoteRequest(to)
 		}
+	}
+}
+
+// TODO(wendongbo): broadcast new heartbeat or append msg to update followers' commit index
+// But performance consideration?
+// checkCommitAt updates leader's committed index
+func (r *Raft) checkCommitAt(index uint64) (newCommit bool){
+	// TODO(wendongbo): check logTerm; Why does Term matter?
+	count := 0
+	for _, v := range r.Prs {
+		if v.Match >= index {
+			count++
+		}
+	}
+	logrus.Infof("leader[%d] term %d checking commit status at %d, count is %d",
+		r.id, r.Term, index, count)
+	if count > len(r.Prs) / 2 && r.RaftLog.committed < index{
+		r.updateCommit(index)
+		logrus.Infof("leader[%d] term:%d commit entry at index %d", r.id, r.Term, index)
+		return true
+	}
+	return false
+}
+
+func (r *Raft) updateCommit(committed uint64) {
+	if committed > r.RaftLog.committed {
+		r.RaftLog.committed = min(committed, r.RaftLog.LastIndex())
 	}
 }
