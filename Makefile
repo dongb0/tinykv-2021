@@ -61,6 +61,12 @@ project2a:
 project2aa:
 	$(GOTEST) ./raft -run 2AA
 
+project2ab-raft:
+	$(GOTEST) ./raft -test.run 2AB$
+
+project2ab-paper:
+	$(GOTEST) ./raft -test.run 2AB_paper
+
 project2ab:
 	$(GOTEST) ./raft -run 2AB
 

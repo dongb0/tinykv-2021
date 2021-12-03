@@ -166,7 +166,7 @@ func (l *RaftLog) entsAfterIndex(index uint64) []*pb.Entry {
 // return matchIndex(entry array index, begin with 0)
 func (l *RaftLog) findMatchEntry(index, logTerm uint64) (matchIndex int, found bool) {
 	if index == 0 {
-		return 0, true
+		return -1, true
 	}
 	idx, end := 0, len(l.entries)
 	for ; idx < end; idx++ {
@@ -181,8 +181,7 @@ func (l *RaftLog) findMatchEntry(index, logTerm uint64) (matchIndex int, found b
 // findEntryIndexByTerm returns first entry index at term logTerm
 // return 0 if logTerm not exist
 func (l *RaftLog) findEntryIndexByTerm(logTerm uint64) uint64 {
-
-	// TODO(wendongbo): binary search
+	// TODO(wendongbo): binary search, stop by the last entry that has term smaller logTerm
 	for i, end := 0, len(l.entries); i < end; i++ {
 		if l.entries[i].Term  == logTerm {
 			return l.entries[i].Index
