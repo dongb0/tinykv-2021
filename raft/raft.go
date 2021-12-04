@@ -298,14 +298,14 @@ func (r *Raft) becomeLeader() {
 	// Your Code Here (2A).
 	// NOTE: Leader should propose a noop entry on its term
 	r.State = StateLeader
-	r.RaftLog.entries = append(r.RaftLog.entries, pb.Entry{ Term: r.Term , Index: r.RaftLog.LastIndex() + 1})
+	r.RaftLog.entries = append(r.RaftLog.entries, pb.Entry{ Term: r.Term , Index: r.RaftLog.LastIndex() + 1 })
 	r.initPrs()
 	log.Printf("peer[%d] comes to power at term %d\n", r.id, r.Term)
 }
 
 // sends heartbeat and append log entries
 func (r *Raft) leaderResponsibility(){
-	r.broadcastHeartbeat()
+	//r.broadcastHeartbeat()
 	// TODO(wendongbo): if we send entries in heartbeat, then no need broadcastEntries later
 	r.broadcastAppendEntries()
 }
@@ -386,20 +386,20 @@ func (r *Raft) Step(m pb.Message) error {
 		case pb.MessageType_MsgAppend:
 			goto Append
 		case pb.MessageType_MsgAppendResponse:
-			// TODO(wendongbo): update Prs
+			// TODO(wendongbo): update code structure
 			r.Prs[m.From].Next = m.Index
 			if m.Reject {
 				r.sendAppend(m.From)
 			} else {
 				// update match index
-				r.Prs[m.From].Match = max(r.Prs[m.From].Match, m.Index - 1)
+				r.Prs[m.From].Match = max(r.Prs[m.From].Match, m.Index)
+				r.Prs[m.From].Next = r.Prs[m.From].Match + 1
 				newCommit := r.checkCommitAt(r.Prs[m.From].Match)
-				if m.Commit < r.RaftLog.committed {
+				if r.Prs[m.From].Match < r.RaftLog.committed {
 					r.sendAppend(m.From)
 				}
 				// TODO(wendongbo): this can be optimize, reduce msg sending
 				if newCommit {
-					//r.broadcastHeartbeat()
 					r.broadcastAppendEntries()
 				}
 			}
@@ -468,9 +468,10 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 		}
 		// set commit index to min(m.committed, index of last message entry)
 		r.updateCommit(min(m.Commit, endEntryIdx))
+		//r.RaftLog.applyEntry()
 
 		msg.Reject = false
-		msg.Index = r.RaftLog.LastIndex() + 1
+		msg.Index = r.RaftLog.LastIndex()
 		msg.Commit = r.RaftLog.committed
 	} else {
 		//msg.Index = r.RaftLog.findEntryIndexByTerm(m.LogTerm)
@@ -570,14 +571,13 @@ func (r *Raft) removeNode(id uint64) {
 
 func (r *Raft) initPrs() {
 	for i := range r.Prs {
-		r.Prs[i].Next = r.RaftLog.LastIndex() + 1
-		// TODO(wendongbo): paper said it should be init to 0?
-		if r.State == StateLeader {
+		if i == r.id {
 			r.Prs[i].Match = r.RaftLog.LastIndex()
+			r.Prs[i].Next = r.RaftLog.LastIndex() + 1
 		} else {
 			r.Prs[i].Match = 0
+			r.Prs[i].Next = 1
 		}
-
 	}
 }
 
@@ -618,7 +618,8 @@ func (r *Raft) checkCommitAt(index uint64) (newCommit bool){
 	}
 	logrus.Infof("leader[%d] term %d checking commit status at index[%d], replica count:%d",
 		r.id, r.Term, index, count)
-	if count > len(r.Prs) / 2 && r.RaftLog.committed < index {
+	logTerm, _ := r.RaftLog.Term(index)
+	if count > len(r.Prs) / 2 && r.RaftLog.committed < index && logTerm == r.Term{
 		r.updateCommit(index)
 		logrus.Infof("leader[%d] term:%d commit entry at index %d", r.id, r.Term, index)
 		return true
@@ -638,16 +639,24 @@ func (r *Raft) followerAppendEntries(matchIndex int, m *pb.Message){
 	if len(m.Entries) == 0 {
 		return
 	}
-	j := 0
+	j, end2 := 0, len(m.Entries)
 	// skip match entry
-	for end := len(r.RaftLog.entries); matchIndex < end; matchIndex, j = matchIndex+1, j+1 {
-		if r.RaftLog.entries[matchIndex].Index != m.Entries[j].Index || r.RaftLog.entries[matchIndex].Term != m.Entries[j].Term {
+	conflictIndex := matchIndex
+	for end1 := len(r.RaftLog.entries); conflictIndex < end1 && j < end2; conflictIndex, j = conflictIndex+1, j+1 {
+		if r.RaftLog.entries[conflictIndex].Index != m.Entries[j].Index || r.RaftLog.entries[conflictIndex].Term != m.Entries[j].Term {
 			break
 		}
 	}
 	// resolve follower conflict entries
-	r.RaftLog.entries = r.RaftLog.entries[:matchIndex]
-	for end := len(m.Entries); j < end; j++ {
-		r.RaftLog.entries = append(r.RaftLog.entries, *m.Entries[j])
+	if j != len(m.Entries) {
+		// TODO(wendongbo): should move update stabled out?
+		// if leader overwrite entries, decrease stabled index to [conflict index - 1]
+		if m.Entries[j].Index <= r.RaftLog.stabled {
+			r.RaftLog.stabled = m.Entries[j].Index - 1
+		}
+		r.RaftLog.entries = r.RaftLog.entries[:conflictIndex]
+		for end := len(m.Entries); j < end; j++ {
+			r.RaftLog.entries = append(r.RaftLog.entries, *m.Entries[j])
+		}
 	}
 }

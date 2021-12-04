@@ -47,6 +47,13 @@ func maxInt(a, b int) int {
 	return b
 }
 
+func minInt(a, b int) int {
+	if a > b {
+		return b
+	}
+	return a
+}
+
 // IsEmptyHardState returns true if the given HardState is empty.
 func IsEmptyHardState(st pb.HardState) bool {
 	return isHardStateEqual(st, pb.HardState{})

@@ -66,14 +66,11 @@ func newLog(storage Storage) *RaftLog {
 	if err != nil {
 		log.Warnf("fetch entry error: %s", err.Error())
 	}
-	if len(entries) == 0 {
-		//entries = append(entries, pb.Entry{})
-	}
 	log := &RaftLog{
 		storage: storage,
 		committed: 0,
 		applied: 0,
-		stabled: 0,
+		stabled: lastIndex,
 		entries: entries,
 		pendingSnapshot: &pb.Snapshot{
 			//  TODO(wendongbo)：2C
@@ -92,7 +89,14 @@ func (l *RaftLog) maybeCompact() {
 // unstableEntries return all the unstable entries
 func (l *RaftLog) unstableEntries() []pb.Entry {
 	// Your Code Here (2A).
-	return l.entries[:]
+	res := make([]pb.Entry, 0)
+	i := l.getArrayIndex(l.stabled + 1)
+	if i != -1 {
+		for end := len(l.entries); i < end; i++ {
+			res = append(res, l.entries[i])
+		}
+	}
+	return res
 }
 
 // nextEnts returns all the committed but not applied entries
@@ -178,14 +182,13 @@ func (l *RaftLog) findMatchEntry(index, logTerm uint64) (matchIndex int, found b
 	return idx, false
 }
 
-// findEntryIndexByTerm returns first entry index at term logTerm
-// return 0 if logTerm not exist
-func (l *RaftLog) findEntryIndexByTerm(logTerm uint64) uint64 {
-	// TODO(wendongbo): binary search, stop by the last entry that has term smaller logTerm
-	for i, end := 0, len(l.entries); i < end; i++ {
-		if l.entries[i].Term  == logTerm {
-			return l.entries[i].Index
+func (l *RaftLog) getArrayIndex(index uint64) int {
+	// TODO(wendongbo): opz binary search
+	i, end := 0, len(l.entries)
+	for ; i < end; i++ {
+		if l.entries[i].Index == index {
+			return i
 		}
 	}
-	return 0
+	return -1
 }
