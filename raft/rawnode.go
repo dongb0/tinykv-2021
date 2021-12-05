@@ -16,7 +16,6 @@ package raft
 
 import (
 	"errors"
-
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 )
 
@@ -70,12 +69,23 @@ type Ready struct {
 type RawNode struct {
 	Raft *Raft
 	// Your Data Here (2A).
+	lastReady Ready
 }
 
 // NewRawNode returns a new RawNode given configuration and a list of raft peers.
 func NewRawNode(config *Config) (*RawNode, error) {
 	// Your Code Here (2A).
-	return nil, nil
+	raft := newRaft(config)
+	rawNode := &RawNode{
+		Raft: raft,
+	}
+
+	rawNode.lastReady.HardState = pb.HardState{
+		Term: raft.Term,
+		Vote: raft.Vote,
+		Commit: raft.RaftLog.committed,
+	}
+	return rawNode, nil
 }
 
 // Tick advances the internal logical clock by a single tick.
@@ -143,12 +153,39 @@ func (rn *RawNode) Step(m pb.Message) error {
 // Ready returns the current point-in-time state of this RawNode.
 func (rn *RawNode) Ready() Ready {
 	// Your Code Here (2A).
-	return Ready{}
+	rd := Ready{
+		Entries: rn.Raft.RaftLog.unstableEntries(),
+		CommittedEntries: rn.Raft.RaftLog.nextEnts(),
+	}
+	// soft state
+	//if rn.lastReady.SoftState == nil  || rn.lastReady.Lead != rn.Raft.Lead || rn.lastReady.RaftState != rn.Raft.State {
+	//	rd.SoftState = &SoftState{
+	//		Lead: rn.Raft.Lead,
+	//		RaftState: rn.Raft.State,
+	//	}
+	//}
+	// hard state
+	if rn.lastReady.Term != rn.Raft.Term || rn.lastReady.Vote != rn.Raft.Vote || rn.lastReady.Commit != rn.Raft.RaftLog.committed {
+		rd.Term = rn.Raft.Term
+		rd.Vote = rn.Raft.Vote
+		rd.Commit = rn.Raft.RaftLog.committed
+	}
+	return rd
 }
 
 // HasReady called when RawNode user need to check if any Ready pending.
 func (rn *RawNode) HasReady() bool {
 	// Your Code Here (2A).
+	rd := rn.Ready()
+	if rd.SoftState != nil || rd.HardState.Term != 0 || rd.HardState.Vote != 0 || rd.HardState.Commit != 0 {
+		return true
+	}
+	if len(rd.Entries) != 0 || len(rd.CommittedEntries) != 0 || len(rd.Messages) != 0{
+		return true
+	}
+	if len(rd.Snapshot.Data) != 0 {
+		return true
+	}
 	return false
 }
 
@@ -156,6 +193,19 @@ func (rn *RawNode) HasReady() bool {
 // last Ready results.
 func (rn *RawNode) Advance(rd Ready) {
 	// Your Code Here (2A).
+	length := len(rd.Entries)
+	if length > 0 {
+		rn.Raft.RaftLog.stabled = rd.Entries[length-1].Index
+	}
+	length = len(rd.CommittedEntries)
+	if length > 0 {
+		rn.Raft.RaftLog.applied = rd.CommittedEntries[length-1].Index
+	}
+
+	// TODO(wendongbo): optimize struct copy
+	if rd.Term != 0 || rd.Vote != 0 || rd.Commit != 0 {
+		rn.lastReady.HardState = rd.HardState
+	}
 }
 
 // GetProgress return the Progress of this node and its peers, if this

@@ -66,9 +66,10 @@ func newLog(storage Storage) *RaftLog {
 	if err != nil {
 		log.Warnf("fetch entry error: %s", err.Error())
 	}
+	hardState, _, _ := storage.InitialState()
 	log := &RaftLog{
 		storage: storage,
-		committed: 0,
+		committed: hardState.Commit,
 		applied: 0,
 		stabled: lastIndex,
 		entries: entries,
