@@ -426,7 +426,8 @@ Election:
 	r.broadcastVoteRequest()
 	if len(r.Prs) == 1 {
 		r.becomeLeader()
-		r.leaderResponsibility()
+		r.updateCommit(r.RaftLog.LastIndex())
+		//r.leaderResponsibility()
 	}
 	return nil
 }
