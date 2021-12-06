@@ -43,7 +43,7 @@ type RaftLog struct {
 
 	// log entries with index <= stabled are persisted to storage.
 	// It is used to record the logs that are not persisted by storage yet.
-	// Everytime handling `Ready`, the unstabled logs will be included.
+	// Everytime handling `Ready`, the unstable logs will be included.
 	stabled uint64
 
 	// all entries that have not yet compact.
@@ -124,24 +124,16 @@ func (l *RaftLog) LastIndex() uint64 {
 }
 
 // Term return the term of the entry in the given index
-func (l *RaftLog) Term(i uint64) (term uint64, err error) {
+func (l *RaftLog) Term(i uint64) (uint64, error) {
 	// Your Code Here (2A).
 	if i == 0 {
 		return 0, nil
 	}
-	for _, ent := range l.entries {
-		if ent.Index == i {
-			return ent.Term, nil
-		}
+	idx := l.getArrayIndex(i)
+	if idx != -1 {
+		return l.entries[idx].Term, nil
 	}
-	// TODO(wendongbo): decide always return last or choose from first & last
-	//if i < l.entries[0].Index {
-	//	term = l.entries[0].Term
-	//} else {
-	//	term = l.entries[len(l.entries) - 1].Term
-	//}
-	term = l.entries[len(l.entries)-1].Term
-	return term, fmt.Errorf("log index out of bound at %d(max:%d)", i, l.LastIndex())
+	return 0, fmt.Errorf("log entry not found at index[%d]", i)
 }
 
 // entsAfterIndex return entries after given index,
@@ -157,12 +149,9 @@ func (l *RaftLog) entsAfterIndex(index uint64) []*pb.Entry {
 		}
 		return res
 	}
-	begin := 0
+	begin := l.getArrayIndex(index)
 	end := len(l.entries)
-	for ; begin < end && l.entries[begin].Index != index; begin++ {
-
-	}
-	for ; begin < end; begin++ {
+	for ; begin != -1 && begin < end; begin++ {
 		res = append(res, &l.entries[begin])
 	}
 	return res
@@ -173,18 +162,34 @@ func (l *RaftLog) findMatchEntry(index, logTerm uint64) (matchIndex int, found b
 	if index == 0 {
 		return -1, true
 	}
-	idx, end := 0, len(l.entries)
-	for ; idx < end; idx++ {
-		ent := l.entries[idx]
-		if ent.Index == index && ent.Term == logTerm {
-			return idx, true
-		}
+	idx := l.getArrayIndex(index)
+	if idx != -1 && l.entries[idx].Term == logTerm {
+		return idx, true
 	}
-	return idx, false
+	return len(l.entries), false
 }
 
+// getArrayIndex returns entries' array index on given parameter [index]
+// return -1 if entry not found
 func (l *RaftLog) getArrayIndex(index uint64) int {
-	// TODO(wendongbo): opz binary search
+	if index == 0 || len(l.entries) == 0 {
+		return -1
+	}
+	lo, hi := 0, len(l.entries) - 1
+	for ; lo <= hi;  {
+		mid := lo + (hi - lo) / 2
+		if l.entries[mid].Index < index {
+			lo = mid + 1
+		} else if l.entries[mid].Index > index {
+			hi = mid - 1
+		} else {
+			return mid
+		}
+	}
+	return -1
+}
+
+func (l *RaftLog) getArrayIndexV0(index uint64) int {
 	i, end := 0, len(l.entries)
 	for ; i < end; i++ {
 		if l.entries[i].Index == index {

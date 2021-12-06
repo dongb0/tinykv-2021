@@ -16,7 +16,6 @@ package raft
 
 import (
 	"errors"
-	"fmt"
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 	"github.com/sirupsen/logrus"
 	"log"
@@ -170,7 +169,6 @@ func newRaft(c *Config) *Raft {
 		panic(err.Error())
 	}
 	// Your Code Here (2A).
-	// c.Applied?
 
 	prs := make(map[uint64]*Progress)
 	votes := make(map[uint64]bool)
@@ -178,14 +176,15 @@ func newRaft(c *Config) *Raft {
 		prs[v] = &Progress{ Next: 0, Match: 0 }
 		votes[v] = false
 	}
-	log := newLog(c.Storage)
-	// TODO(wendongbo): use confState?
+	logEntry := newLog(c.Storage)
+	logEntry.applied = c.Applied
+
 	hardState, _, _ := c.Storage.InitialState()
 	node := &Raft{
 		id: c.ID,
 		Term: hardState.Term,
 		Vote: hardState.Vote,
-		RaftLog: log,
+		RaftLog: logEntry,
 		Prs: prs,
 		State: StateFollower,
 		votes: votes,
@@ -204,10 +203,11 @@ func newRaft(c *Config) *Raft {
 // current commit index to the given peer. Returns true if a message was sent.
 func (r *Raft) sendAppend(to uint64) bool {
 	// Your Code Here (2A).
-	prevIndex := r.Prs[to].Next - 1 // why do we initialize next to lastIndex + 1
-	logTerm, _ := r.RaftLog.Term(prevIndex)
-	// TODO(wendongbo): if we don't find corresponding term,
-	// append definitely will fail, why not just return first/last entry
+	prevIndex := r.Prs[to].Next - 1
+	logTerm, err := r.RaftLog.Term(prevIndex)
+	if err != nil {
+		return false
+	}
 
 	ent := r.RaftLog.entsAfterIndex(prevIndex + 1)
 	msg := pb.Message{
@@ -221,11 +221,14 @@ func (r *Raft) sendAppend(to uint64) bool {
 		Commit: r.RaftLog.committed,
 	}
 	r.msgs = append(r.msgs, msg)
-	return false
+	return true
 }
 
 func (r *Raft) sendVoteRequest(to uint64) {
-	logTerm, _ := r.RaftLog.Term(r.RaftLog.LastIndex())
+	logTerm, err := r.RaftLog.Term(r.RaftLog.LastIndex())
+	if err != nil {
+		logrus.Panicf("sendVoteRequest err: %s", err.Error())
+	}
 	msg := pb.Message{
 		MsgType: pb.MessageType_MsgRequestVote,
 		From: r.id,
@@ -328,12 +331,6 @@ func (r *Raft) Step(m pb.Message) error {
 			goto Append
 		}
 	case StateCandidate:
-		//if m.Term > r.Term {
-		//	err := fmt.Sprintf("peer[%d] term:%d Step recv stale msg from peer[%d] term:%d", r.id, r.Term, m.From, m.Term)
-		//	r.becomeFollower(m.Term, None)
-		//	log.Println(err)
-		//	// should we reset timer here?
-		//}
 		switch m.MsgType {
 		case pb.MessageType_MsgHup:
 			goto Election
@@ -350,12 +347,6 @@ func (r *Raft) Step(m pb.Message) error {
 			goto Append
 		}
 	case StateLeader:
-		if m.Term > r.Term {
-			err := fmt.Sprintf("peer[%d] term:%d Step recv Higher Term msg from peer[%d] term:%d", r.id, r.Term, m.From, m.Term)
-			r.becomeFollower(m.Term, None)
-			log.Println(err)
-			// should we reset timer here?
-		}
 		switch m.MsgType {
 		case pb.MessageType_MsgPropose: // append logs to leader's entries
 			for _, ent := range m.Entries {
@@ -395,12 +386,10 @@ func (r *Raft) Step(m pb.Message) error {
 				r.Prs[m.From].Match = max(r.Prs[m.From].Match, m.Index)
 				r.Prs[m.From].Next = r.Prs[m.From].Match + 1
 				newCommit := r.checkCommitAt(r.Prs[m.From].Match)
-				if r.Prs[m.From].Match < r.RaftLog.committed {
-					r.sendAppend(m.From)
-				}
-				// TODO(wendongbo): this can be optimize, reduce msg sending
 				if newCommit {
 					r.broadcastAppendEntries()
+				} else if r.Prs[m.From].Match < r.RaftLog.committed {
+					r.sendAppend(m.From)
 				}
 			}
 		}
@@ -408,17 +397,9 @@ func (r *Raft) Step(m pb.Message) error {
 	return nil
 
 HeartBeat:
-	if m.Term >= r.Term/* && r.State != StateFollower */{
-		r.becomeFollower(m.Term, m.From)
-	}
 	r.handleHeartbeat(m)
-	// TODO(wendongbo): should we move this into handle heartbeat
 	return nil
 Append:
-	// TODO: ignore stale append msg
-	if m.Term >= r.Term {
-		r.becomeFollower(m.Term, m.From)
-	}
 	r.handleAppendEntries(m)
 	return nil
 Election:
@@ -427,7 +408,6 @@ Election:
 	if len(r.Prs) == 1 {
 		r.becomeLeader()
 		r.updateCommit(r.RaftLog.LastIndex())
-		//r.leaderResponsibility()
 	}
 	return nil
 }
@@ -436,10 +416,15 @@ Election:
 // handleAppendEntries handle AppendEntries RPC request
 func (r *Raft) handleAppendEntries(m pb.Message) {
 	// Your Code Here (2A).
-	if m.Term > r.Term { // no logic update Term in follower
-		r.becomeFollower(m.Term, None)
+	// Even receive 2 leaders' msg after split(only one is valid leader)
+	// we can safely append any newer entry, log entries will finally converge
+	if m.Term >= r.Term {
+		r.becomeFollower(m.Term, m.From)
+	} else {
+		logrus.Warnf("peer[%d] term:%d recv stale append from id:%d term:%d [%s], reject append",
+			r.id, r.Term, m.From, m.Term, m.String())
+		return
 	}
-	//r.becomeFollower(m.Term, m.From)
 	msg := pb.Message{
 		MsgType: pb.MessageType_MsgAppendResponse,
 		From: r.id,
@@ -451,13 +436,6 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 	defer func() {
 		r.msgs = append(r.msgs, msg)
 	}()
-	if m.Term < r.Term {
-		// TODO(wendongbo): update logic
-		logrus.Warnf("peer[%d] term:%d recv append from id:%d term:%d [%s], reject append",
-			r.id, r.Term, m.From, m.Term, m.String())
-		return
-	}
-
 	matchIndex, found := r.RaftLog.findMatchEntry(m.Index, m.LogTerm)
 	// accept entries
 	if found {
@@ -469,13 +447,11 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 		}
 		// set commit index to min(m.committed, index of last message entry)
 		r.updateCommit(min(m.Commit, endEntryIdx))
-		//r.RaftLog.applyEntry()
 
 		msg.Reject = false
 		msg.Index = r.RaftLog.LastIndex()
 		msg.Commit = r.RaftLog.committed
 	} else {
-		//msg.Index = r.RaftLog.findEntryIndexByTerm(m.LogTerm)
 		msg.Index = m.Index
 	}
 }
@@ -483,29 +459,30 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 // handleHeartbeat handle Heartbeat RPC request
 func (r *Raft) handleHeartbeat(m pb.Message) {
 	// Your Code Here (2A).
+
 	log.Printf("peer[%d] handling heartbeat from p[%d] term:%d\n", r.id, m.From, m.Term)
+
+	// ignore stale heartbeat
 	if m.Term < r.Term {
-		logrus.Warnf("peer[%d] recv unexpected heartbeat from id:%d term:%d\n", r.id, m.From, m.Term)
+		logrus.Warnf("peer[%d] t:%d recv unexpected heartbeat from id:%d term:%d\n", r.id, r.Term, m.From, m.Term)
 		return
 	}
-	r.Lead = m.From // TODO(wendongbo): remove this assignment?
+	r.becomeFollower(m.Term, m.From)
 	r.heartbeatElapsed = 0
 	r.electionElapsed = 0
-	//r.updateCommit(m.Commit)
 
 	lastIndex := r.RaftLog.LastIndex()
-	//logTerm, _ := r.RaftLog.Term(lastIndex)
 	msg := pb.Message{
 		MsgType: pb.MessageType_MsgHeartbeatResponse,
 		From: r.id,
 		To: m.From,
-		//LogTerm: logTerm,
 		Index: lastIndex,
 	}
 	r.msgs = append(r.msgs, msg)
 }
 
 func (r *Raft) handleVoteRequest(m pb.Message) {
+	// TODO(wendongbo): campaign conflict rate is high, how to solve it
 	if m.Term > r.Term {	// reset self status to follower
 		r.becomeFollower(m.Term, None)
 	}
@@ -516,7 +493,10 @@ func (r *Raft) handleVoteRequest(m pb.Message) {
 		Term: r.Term,
 		Reject: true,
 	}
-	logTerm, _ := r.RaftLog.Term(r.RaftLog.LastIndex())
+	logTerm, err := r.RaftLog.Term(r.RaftLog.LastIndex())
+	if err != nil {
+		logrus.Panicf("handleVoteRequest err: %s", err.Error())
+	}
 	if m.Term < r.Term ||  m.LogTerm < logTerm || m.LogTerm == logTerm && m.Index < r.RaftLog.LastIndex() {	// msg from stale peer
 		msg.Reject = true
 	} else if r.Vote == None || r.Vote == m.From {	// if not vote yet or voted for the same node before, grant vote
@@ -619,7 +599,10 @@ func (r *Raft) checkCommitAt(index uint64) (newCommit bool){
 	}
 	logrus.Infof("leader[%d] term %d checking commit status at index[%d], replica count:%d",
 		r.id, r.Term, index, count)
-	logTerm, _ := r.RaftLog.Term(index)
+	logTerm, err := r.RaftLog.Term(index)
+	if err != nil {
+		logrus.Panicf("sendVoteRequest err: %s", err.Error())
+	}
 	if count > len(r.Prs) / 2 && r.RaftLog.committed < index && logTerm == r.Term{
 		r.updateCommit(index)
 		logrus.Infof("leader[%d] term:%d commit entry at index %d", r.id, r.Term, index)
@@ -628,16 +611,15 @@ func (r *Raft) checkCommitAt(index uint64) (newCommit bool){
 	return false
 }
 
-// TODO(wendongbo): update
 func (r *Raft) updateCommit(committed uint64) {
 	if committed > r.RaftLog.committed {
 		r.RaftLog.committed = min(committed, r.RaftLog.LastIndex())
 	}
 }
 
-// TODO(wendongbo): move into log.go?
 func (r *Raft) followerAppendEntries(matchIndex int, m *pb.Message){
-	if len(m.Entries) == 0 {
+	if r.State != StateFollower || len(m.Entries) == 0 {
+		log.Printf("peer[%d] term:%d state:%s failed to append [%s]", r.id, r.Term, r.State, m.String())
 		return
 	}
 	j, end2 := 0, len(m.Entries)
@@ -650,7 +632,6 @@ func (r *Raft) followerAppendEntries(matchIndex int, m *pb.Message){
 	}
 	// resolve follower conflict entries
 	if j != len(m.Entries) {
-		// TODO(wendongbo): should move update stabled out?
 		// if leader overwrite entries, decrease stabled index to [conflict index - 1]
 		if m.Entries[j].Index <= r.RaftLog.stabled {
 			r.RaftLog.stabled = m.Entries[j].Index - 1
