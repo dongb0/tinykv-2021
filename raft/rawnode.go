@@ -17,6 +17,8 @@ package raft
 import (
 	"errors"
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
+	"log"
+	"reflect"
 )
 
 // ErrStepLocalMsg is returned when try to step a local raft message
@@ -153,9 +155,14 @@ func (rn *RawNode) Step(m pb.Message) error {
 // Ready returns the current point-in-time state of this RawNode.
 func (rn *RawNode) Ready() Ready {
 	// Your Code Here (2A).
+	msgs := rn.Raft.msgs
+	if len(msgs) == 0 {	// if not set to nil, TestRawNodeReset2AC will fail
+		msgs = nil
+	}
 	rd := Ready{
 		Entries: rn.Raft.RaftLog.unstableEntries(),
 		CommittedEntries: rn.Raft.RaftLog.nextEnts(),
+		Messages: msgs,
 	}
 	// soft state
 	//if rn.lastReady.SoftState == nil  || rn.lastReady.Lead != rn.Raft.Lead || rn.lastReady.RaftState != rn.Raft.State {
@@ -206,6 +213,17 @@ func (rn *RawNode) Advance(rd Ready) {
 	if rd.Term != 0 || rd.Vote != 0 || rd.Commit != 0 {
 		rn.lastReady.HardState = rd.HardState
 	}
+
+	lastEntIdx := len(rd.Messages) - 1
+	if lastEntIdx >= 0  {
+		if reflect.DeepEqual(rn.Raft.msgs[0], rd.Messages[0]) {
+			log.Printf("p[%d] term:%d Advance remove msg from raft msgs %v\n", rn.Raft.id, rn.Raft.Term, rd.Messages)
+			rn.Raft.msgs = rn.Raft.msgs[:lastEntIdx + 1]
+		}else {
+			log.Printf("p[%d] term:%d Advance failed\n", rn.Raft.id, rn.Raft.Term)
+		}
+	}
+
 }
 
 // GetProgress return the Progress of this node and its peers, if this

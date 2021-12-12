@@ -170,16 +170,21 @@ func newRaft(c *Config) *Raft {
 	}
 	// Your Code Here (2A).
 
+	hardState, confState, _ := c.Storage.InitialState()
+	//hardState, _, _ := c.Storage.InitialState()
 	prs := make(map[uint64]*Progress)
 	votes := make(map[uint64]bool)
 	for _, v := range c.peers {
 		prs[v] = &Progress{ Next: 0, Match: 0 }
 		votes[v] = false
 	}
+	for _, v := range confState.GetNodes() {
+		prs[v] = &Progress{ Next: 0, Match: 0 }
+		votes[v] = false
+	}
 	logEntry := newLog(c.Storage)
 	logEntry.applied = c.Applied
 
-	hardState, _, _ := c.Storage.InitialState()
 	node := &Raft{
 		id: c.ID,
 		Term: hardState.Term,
@@ -258,13 +263,19 @@ func (r *Raft) tick() {
 	// Your Code Here (2A).
 	r.heartbeatElapsed++
 	r.electionElapsed++
+	log.Printf("peer[%d] term:%d hElapsed:%d, eElapsed:%d, hTimeout:%d, eTimeout:%d", r.id, r.Term, r.heartbeatElapsed, r.electionElapsed, r.heartbeatTimeout, r.electionTimeout)
 	switch r.State {
 	case StateFollower, StateCandidate:
 		if r.electionElapsed >= r.electionTimeout + rand.Intn(r.electionTimeout * 2){
+			logrus.Warnf("peer[%d] term:%d election timeout occur", r.id, r.Term)
 			// TODO(wendongbo): why does candidate have higher conflict rate?
-			// TODO(wendongbo): call Step() instead
-			r.becomeCandidate()
-			r.broadcastVoteRequest()
+			//r.becomeCandidate()
+			//r.broadcastVoteRequest()
+			r.Step(pb.Message{
+				From: r.id,
+				To: r.id,
+				MsgType: pb.MessageType_MsgHup,
+			})
 		}
 	case StateLeader:
 		if r.heartbeatElapsed >= r.heartbeatTimeout {
@@ -374,6 +385,8 @@ func (r *Raft) Step(m pb.Message) error {
 			}
 		case pb.MessageType_MsgRequestVote:
 			r.handleVoteRequest(m)
+		case pb.MessageType_MsgRequestVoteResponse:
+			r.handleVoteResponse(m)
 		case pb.MessageType_MsgAppend:
 			goto Append
 		case pb.MessageType_MsgAppendResponse:
@@ -468,7 +481,7 @@ func (r *Raft) handleHeartbeat(m pb.Message) {
 		return
 	}
 	r.becomeFollower(m.Term, m.From)
-	r.heartbeatElapsed = 0
+	//r.heartbeatElapsed = 0
 	r.electionElapsed = 0
 
 	lastIndex := r.RaftLog.LastIndex()
@@ -486,6 +499,7 @@ func (r *Raft) handleVoteRequest(m pb.Message) {
 	if m.Term > r.Term {	// reset self status to follower
 		r.becomeFollower(m.Term, None)
 	}
+	r.electionElapsed = 0
 	msg := pb.Message{
 		MsgType: pb.MessageType_MsgRequestVoteResponse,
 		From: r.id,
@@ -510,7 +524,7 @@ func (r *Raft) handleVoteRequest(m pb.Message) {
 }
 
 func (r *Raft) handleVoteResponse(m pb.Message) {
-	log.Printf("peer[%d] handleing vote response:[%s]\n", r.id, m.String())
+	log.Printf("peer[%d] handling vote response:[%s]\n", r.id, m.String())
 	if m.Term < r.Term { 	// stale vote response
 		return
 	}
@@ -528,7 +542,7 @@ func (r *Raft) handleVoteResponse(m pb.Message) {
 		}
 	}
 	log.Printf("peer[%d] gets %d votes at term %d\n", r.id, voteCnt, r.Term)
-	if voteCnt > peerNum / 2 {
+	if voteCnt > peerNum / 2 && r.State == StateCandidate { // avoid sending msg twice
 		r.becomeLeader()
 		r.leaderResponsibility()
 	} else if r.rejectCount > peerNum / 2 {
@@ -581,6 +595,7 @@ func (r *Raft) broadcastHeartbeat(){
 func (r *Raft) broadcastVoteRequest() {
 	for to := range r.votes {
 		if to != r.id {
+			log.Printf("p[%d] Term:%d send vote request to peer[%d]", r.id, r.Term, to)
 			r.sendVoteRequest(to)
 		}
 	}

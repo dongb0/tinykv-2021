@@ -36,10 +36,10 @@ func SpawnClientsAndWait(t *testing.T, ch chan bool, ncli int, fn func(me int, t
 		ca[cli] = make(chan bool)
 		go runClient(t, cli, ca[cli], fn)
 	}
-	// log.Printf("SpawnClientsAndWait: waiting for clients")
+	log.Infof("SpawnClientsAndWait: waiting for clients")
 	for cli := 0; cli < ncli; cli++ {
 		ok := <-ca[cli]
-		// log.Infof("SpawnClientsAndWait: client %d is done\n", cli)
+		log.Infof("SpawnClientsAndWait: client %d is done\n", cli)
 		if ok == false {
 			t.Fatalf("failure")
 		}
@@ -222,7 +222,7 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 				if (rand.Int() % 1000) < 500 {
 					key := strconv.Itoa(cli) + " " + fmt.Sprintf("%08d", j)
 					value := "x " + strconv.Itoa(cli) + " " + strconv.Itoa(j) + " y"
-					// log.Infof("%d: client new put %v,%v\n", cli, key, value)
+					log.Infof("%d: client new put %v,%v\n", cli, key, value)
 					cluster.MustPut([]byte(key), []byte(value))
 					last = NextValue(last, value)
 					j++
@@ -346,6 +346,7 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 
 func TestBasic2B(t *testing.T) {
 	// Test: one client (2B) ...
+	log.SetLevel(log.LOG_LEVEL_ALL)
 	GenericTest(t, "2B", 1, false, false, false, -1, false, false)
 }
 

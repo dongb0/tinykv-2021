@@ -331,7 +331,36 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, error) {
 	// Hint: you may call `Append()` and `ApplySnapshot()` in this function
 	// Your Code Here (2B/2C).
-	return nil, nil
+
+	res := &ApplySnapResult{
+		Region: ps.Region(),
+		PrevRegion: ps.Region(),
+	}
+	// save raft log and raft state
+	// (0x01 0x02 region_id 0x01 log_idx, Entry) (0x01 0x02 region_id 0x02, RaftLocalState)
+	wb := &engine_util.WriteBatch{
+
+	}
+	err := ps.Engines.Raft.Update(func(txn *badger.Txn) error {
+		ps.Engines.WriteRaft(wb)
+
+		return nil
+	})
+	if err != nil {
+		return res, err
+	}
+
+	// save apply state and region state
+	// (0x01 0x02 region_id 0x03, RaftApplyState) (0x01 0x03 region_id 0x01, RegionLocalState)
+	err = ps.Engines.Kv.Update(func(txn *badger.Txn) error {
+
+
+		return nil
+	})
+	if err != nil {
+		return res, err
+	}
+	return res, nil
 }
 
 func (ps *PeerStorage) ClearData() {

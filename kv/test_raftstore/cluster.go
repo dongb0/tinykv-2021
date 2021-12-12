@@ -54,7 +54,7 @@ func NewCluster(count int, schedulerClient *MockSchedulerClient, simulator Simul
 func (c *Cluster) Start() {
 	ctx := context.TODO()
 	clusterID := c.schedulerClient.GetClusterID(ctx)
-
+	// create directory and db instances, begin with index 1
 	for storeID := uint64(1); storeID <= uint64(c.count); storeID++ {
 		dbPath, err := ioutil.TempDir("", "test-raftstore")
 		if err != nil {

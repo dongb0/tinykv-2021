@@ -43,6 +43,15 @@ func (d *peerMsgHandler) HandleRaftReady() {
 		return
 	}
 	// Your Code Here (2B).
+	log.Infof("should have code handle ready")
+	if d.RaftGroup.HasReady() {
+		rd := d.RaftGroup.Ready()
+		fmt.Printf("%s\n", rd.String())
+		d.Send(d.ctx.trans, rd.Messages)
+		d.RaftGroup.Advance(rd)
+	} else {
+		fmt.Printf("no new ready to handle\n")
+	}
 }
 
 func (d *peerMsgHandler) HandleMsg(msg message.Msg) {
@@ -114,6 +123,8 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 		return
 	}
 	// Your Code Here (2B).
+
+
 }
 
 func (d *peerMsgHandler) onTick() {

@@ -94,6 +94,9 @@ project3: project3a project3b project3c
 project3a:
 	$(GOTEST) ./raft -run 3A
 
+project3b1:
+	$(GOTEST) ./kv/test_raftstore -run ^TestTransferLeader3B$
+
 project3b:
 	$(GOTEST) ./kv/test_raftstore -run ^TestTransferLeader3B$ || true
 	$(GOTEST) ./kv/test_raftstore -run ^TestBasicConfChange3B$ || true
