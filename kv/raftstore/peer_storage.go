@@ -436,7 +436,7 @@ func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, erro
 	// (0x01 0x03 region_id 0x01, RegionLocalState)
 	wb.Reset()
 
-	cf := engine_util.CfDefault
+	//cf := engine_util.CfDefault
 	for _, ent := range ready.CommittedEntries {
 		req := raft_cmdpb.Request{}
 		err := req.Unmarshal(ent.Data)
@@ -445,9 +445,11 @@ func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, erro
 		}
 		switch req.CmdType {
 		case raft_cmdpb.CmdType_Put:
+			cf := req.Put.Cf
 			wb.SetCF(cf, req.Put.Key, req.Put.Value)
 			log.Debugf("committedEntries set put.key:%v, put.val:%v", string(engine_util.KeyWithCF(cf, req.Put.Key)), string(req.Put.Value))
 		case raft_cmdpb.CmdType_Delete:
+			cf := req.Delete.Cf
 			wb.DeleteCF(cf, req.Delete.Key)
 		default:
 			log.Warnf("SaveReadyState not implements apply op: %d", req.CmdType)

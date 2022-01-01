@@ -76,6 +76,9 @@ project2ac:
 project2b1:
 	$(GOTEST) ./kv/test_raftstore -run ^TestBasic2B$
 
+project2b2:
+	$(GOTEST) ./kv/test_raftstore -run ^TestOnePartition2B$
+
 project2b:
 	$(GOTEST) ./kv/test_raftstore -run ^TestBasic2B$ || true
 	$(GOTEST) ./kv/test_raftstore -run ^TestConcurrent2B$ || true

@@ -2,6 +2,8 @@ package raftstore
 
 import (
 	"fmt"
+	"github.com/Connor1996/badger"
+	"github.com/pingcap-incubator/tinykv/kv/util/engine_util"
 	"time"
 
 	"github.com/Connor1996/badger/y"
@@ -63,6 +65,7 @@ func (d *peerMsgHandler) HandleRaftReady() {
 		d.Send(d.ctx.trans, rd.Messages)
 		d.RaftGroup.Advance(rd)
 
+		// response to client when majority response(recv appendResponse)
 		// 1. find corresponding proposal
 		// 2. construct response
 		// 3. Done
@@ -160,6 +163,26 @@ func (d *peerMsgHandler) preProposeRaftCommand(req *raft_cmdpb.RaftCmdRequest) e
 	return err
 }
 
+func debugIterateDB(db *badger.DB) {
+	err := db.View(func(txn *badger.Txn) error {
+		iter := txn.NewIterator(badger.DefaultIteratorOptions)
+		for iter.Rewind(); iter.Valid(); iter.Next() {
+			item := iter.Item()
+			key := item.Key()
+			val, err := item.Value()
+			if err != nil {
+				return err
+			}
+			log.Debugf("iterating {k:%v=>%s, v:%v=>%s}", key, key, val, val)
+		}
+		iter.Close()
+		return nil
+	})
+	if err != nil {
+		log.Errorf("%v", err)
+	}
+}
+
 func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *message.Callback) {
 	err := d.preProposeRaftCommand(msg)
 	if err != nil {
@@ -172,8 +195,34 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 		switch req.CmdType {
 		case raft_cmdpb.CmdType_Invalid:
 			// ignore
-		case raft_cmdpb.CmdType_Get:	// get response return value
-			log.Error("CmdType_Get to be implemented")
+		case raft_cmdpb.CmdType_Get:	// GET response return value
+			var key, val []byte
+			err := d.ctx.engine.Kv.View(func(txn *badger.Txn) error {
+				key = engine_util.KeyWithCF(req.Get.Cf, req.Get.Key)
+				item, err := txn.Get(key)
+				if err != nil {
+					return err
+				}
+				val, err = item.Value()
+				if err != nil {
+					return nil
+				}
+				return nil
+			})
+			if err != nil {
+				log.Errorf("CmdType_Get get value err:%v, using key:%s", err, key)
+			}
+
+			res := &raft_cmdpb.Response{
+				CmdType: raft_cmdpb.CmdType_Get,
+				Get: &raft_cmdpb.GetResponse{
+					Value: val,
+				},
+			}
+			resp := newCmdResp()
+			resp.Responses = []*raft_cmdpb.Response{res}
+			cb.Done(resp)
+
 		case raft_cmdpb.CmdType_Put, raft_cmdpb.CmdType_Delete:	// PUT/DELETE response no return val
 			// TODO(wendongbo): one request, one response
 			data, err := req.Marshal()
@@ -187,20 +236,6 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 			if err != nil {
 				log.Errorf("proposeRaftCmd err: %s", err.Error())
 			}
-
-		//case raft_cmdpb.CmdType_Delete:
-			//log.Warnf("cmd delete not fully implemented")
-			//data, err := req.Marshal()
-			//if err != nil {
-			//	log.Errorf("proposeRaftCmd err: %s", err.Error())
-			//}
-			//index := d.RaftGroup.Raft.RaftLog.LastIndex() + 1
-			//d.proposals = append(d.proposals, &proposal{term: d.Term(), index: index, cb: cb})
-			//log.Debugf("peer[%d]term:%d add proposal idx:%d, term:%d", d.PeerId(), d.Term(), index, d.Term())
-			//err = d.RaftGroup.Propose(data)
-			//if err != nil {
-			//	log.Errorf("proposeRaftCmd err: %s", err.Error())
-			//}
 
 		case raft_cmdpb.CmdType_Snap:
 			// read from leader, we can return immediately
