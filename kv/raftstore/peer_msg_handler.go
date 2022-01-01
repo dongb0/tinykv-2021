@@ -38,23 +38,67 @@ func newPeerMsgHandler(peer *peer, ctx *GlobalContext) *peerMsgHandler {
 	}
 }
 
+func findProposal(index, term uint64 , arr []*proposal) *proposal{
+	for _, a := range arr {
+		if index == a.index && term == a.term {
+			return a
+		}
+	}
+	return nil
+}
+
 func (d *peerMsgHandler) HandleRaftReady() {
 	if d.stopped {
 		return
 	}
 	// Your Code Here (2B).
-	log.Infof("should have code handle ready")
 	if d.RaftGroup.HasReady() {
 		rd := d.RaftGroup.Ready()
-		fmt.Printf("%s\n", rd.String())
+		log.Debugf("peer[%d] term:%d HandleRaftReady handling ready:%v", d.PeerId(), d.RaftGroup.Raft.Term, rd)
+		_, err := d.peerStorage.SaveReadyState(&rd) // TODO(wendongbo): not fully implemented
+		if err != nil {
+			log.Errorf("apply raft ready err:%v", err)
+		}
+
 		d.Send(d.ctx.trans, rd.Messages)
 		d.RaftGroup.Advance(rd)
+
+		// 1. find corresponding proposal
+		// 2. construct response
+		// 3. Done
+		for _, ent := range rd.CommittedEntries {
+			p := findProposal(ent.Index, ent.Term, d.proposals)
+			if p == nil {
+				log.Debugf("no corresponding proposal idx:%d,term:%d, proposals:%v", ent.Index, ent.Term, d.proposals)
+				continue
+			}
+			log.Debugf("peer[%d] term:%d proposal[idx:%d,term:%d] done", d.PeerId(), d.Term(), ent.Index, ent.Term)
+
+			resp := newCmdResp()
+			req := raft_cmdpb.Request{}
+			err := req.Unmarshal(ent.Data)
+			if err != nil {
+				log.Errorf("%s", err.Error())
+			}
+			if req.CmdType == raft_cmdpb.CmdType_Invalid{
+				log.Warnf("invalid cmd type, req:%v", req)
+				continue
+			}
+
+			log.Debugf("unmarshal request:%v", req)
+			resp.Responses = []*raft_cmdpb.Response{
+				{CmdType: req.CmdType},
+			}
+			p.cb.Txn = d.peerStorage.Engines.Kv.NewTransaction(false)
+			p.cb.Done(resp)
+		}
 	} else {
-		fmt.Printf("no new ready to handle\n")
+		log.Debugf("no new ready to handle")
 	}
 }
 
 func (d *peerMsgHandler) HandleMsg(msg message.Msg) {
+	log.Debugf("p[%d] HandleMsg:%v", d.PeerId(), msg)
 	switch msg.Type {
 	case message.MsgTypeRaftMessage:
 		raftMsg := msg.Data.(*rspb.RaftMessage)
@@ -123,8 +167,53 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 		return
 	}
 	// Your Code Here (2B).
+	log.Debugf("should have code to handle raft command(len:%d):%s", len(msg.Requests), msg.String())
+	for _, req := range msg.Requests {
+		switch req.CmdType {
+		case raft_cmdpb.CmdType_Invalid:
+			// ignore
+		case raft_cmdpb.CmdType_Get:	// get response return value
+			log.Error("CmdType_Get to be implemented")
+		case raft_cmdpb.CmdType_Put, raft_cmdpb.CmdType_Delete:	// PUT/DELETE response no return val
+			// TODO(wendongbo): one request, one response
+			data, err := req.Marshal()
+			if err != nil {
+				log.Errorf("proposeRaftCmd err: %s", err.Error())
+			}
+			index := d.RaftGroup.Raft.RaftLog.LastIndex() + 1
+			d.proposals = append(d.proposals, &proposal{term: d.Term(), index: index, cb: cb})
+			log.Debugf("peer[%d]term:%d add proposal idx:%d, term:%d", d.PeerId(), d.Term(), index, d.Term())
+			err = d.RaftGroup.Propose(data)
+			if err != nil {
+				log.Errorf("proposeRaftCmd err: %s", err.Error())
+			}
 
+		//case raft_cmdpb.CmdType_Delete:
+			//log.Warnf("cmd delete not fully implemented")
+			//data, err := req.Marshal()
+			//if err != nil {
+			//	log.Errorf("proposeRaftCmd err: %s", err.Error())
+			//}
+			//index := d.RaftGroup.Raft.RaftLog.LastIndex() + 1
+			//d.proposals = append(d.proposals, &proposal{term: d.Term(), index: index, cb: cb})
+			//log.Debugf("peer[%d]term:%d add proposal idx:%d, term:%d", d.PeerId(), d.Term(), index, d.Term())
+			//err = d.RaftGroup.Propose(data)
+			//if err != nil {
+			//	log.Errorf("proposeRaftCmd err: %s", err.Error())
+			//}
 
+		case raft_cmdpb.CmdType_Snap:
+			// read from leader, we can return immediately
+			res := &raft_cmdpb.Response{
+				CmdType: raft_cmdpb.CmdType_Snap,
+				Snap: &raft_cmdpb.SnapResponse{Region: d.Region()},
+			}
+			resp := newCmdResp()
+			resp.Responses = []*raft_cmdpb.Response{res}
+			cb.Txn = d.peerStorage.Engines.Kv.NewTransaction(false)
+			cb.Done(resp)
+		}
+	}
 }
 
 func (d *peerMsgHandler) onTick() {

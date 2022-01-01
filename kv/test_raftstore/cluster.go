@@ -188,10 +188,12 @@ func (c *Cluster) Request(key []byte, reqs []*raft_cmdpb.Request, timeout time.D
 		resp, txn := c.CallCommandOnLeader(&req, timeout)
 		if resp == nil {
 			// it should be timeouted innerly
+			log.Debugf("Cluster send request no response")
 			SleepMS(100)
 			continue
 		}
 		if resp.Header.Error != nil {
+			log.Debugf("Cluster send request error: %s", resp.Header.Error)
 			SleepMS(100)
 			continue
 		}
@@ -247,6 +249,7 @@ func (c *Cluster) CallCommandOnLeader(request *raft_cmdpb.RaftCmdRequest, timeou
 				continue
 			}
 		}
+		log.Debugf("CallOnLeaderCommand return resp:%v, txn:%v", resp, txn)
 		return resp, txn
 	}
 }
@@ -303,7 +306,7 @@ func (c *Cluster) MustPutCF(cf string, key, value []byte) {
 		panic(resp.Header.Error)
 	}
 	if len(resp.Responses) != 1 {
-		panic("len(resp.Responses) != 1")
+		log.Panicf("len(resp.Responses) != 1, get:%d", len(resp.Responses))
 	}
 	if resp.Responses[0].CmdType != raft_cmdpb.CmdType_Put {
 		panic("resp.Responses[0].CmdType != raft_cmdpb.CmdType_Put")

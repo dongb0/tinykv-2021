@@ -105,7 +105,7 @@ func (l *RaftLog) nextEnts() (ents []pb.Entry) {
 	// Your Code Here (2A).
 	begin, end := 0, len(l.entries)
 	for ; begin != end && l.entries[begin].Index <= l.applied; begin++ {
-
+		// TODO(wendongbo): use getArrayIndex(binary search) to skip
 	}
 	for ; begin != end && l.entries[begin].Index <= l.committed; begin++ {
 		ents = append(ents, l.entries[begin])
@@ -117,7 +117,7 @@ func (l *RaftLog) nextEnts() (ents []pb.Entry) {
 func (l *RaftLog) LastIndex() uint64 {
 	// Your Code Here (2A).
 	if len(l.entries) == 0 {
-		return 0
+		return l.committed
 	}
 	last := len(l.entries) - 1
 	return l.entries[last].Index

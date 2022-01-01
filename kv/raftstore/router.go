@@ -1,6 +1,7 @@
 package raftstore
 
 import (
+	"github.com/pingcap-incubator/tinykv/log"
 	"sync"
 	"sync/atomic"
 
@@ -64,6 +65,7 @@ func (pr *router) send(regionID uint64, msg message.Msg) error {
 		return errPeerNotFound
 	}
 	pr.peerSender <- msg
+	log.Debugf("router sends Msg:%v to %d", msg, regionID)
 	return nil
 }
 

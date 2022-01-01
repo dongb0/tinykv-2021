@@ -3,6 +3,7 @@ package raftstore
 import (
 	"bytes"
 	"fmt"
+	"github.com/pingcap-incubator/tinykv/proto/pkg/raft_cmdpb"
 	"time"
 
 	"github.com/Connor1996/badger"
@@ -86,6 +87,7 @@ func (ps *PeerStorage) InitialState() (eraftpb.HardState, eraftpb.ConfState, err
 	return *raftState.HardState, util.ConfStateFromRegion(ps.region), nil
 }
 
+// Entries reads entries between [low, high) from Engines.raft
 func (ps *PeerStorage) Entries(low, high uint64) ([]eraftpb.Entry, error) {
 	if err := ps.checkRange(low, high); err != nil || low == high {
 		return nil, err
@@ -308,6 +310,30 @@ func ClearMeta(engines *engine_util.Engines, kvWB, raftWB *engine_util.WriteBatc
 // never be committed
 func (ps *PeerStorage) Append(entries []eraftpb.Entry, raftWB *engine_util.WriteBatch) error {
 	// Your Code Here (2B).
+	log.Warnf("[Implement Me]peer store append entry:%v, write batch:%v", entries, *raftWB)
+	// TODO(wendongbo): append entries here (and compare with read function)
+	err := ps.Engines.Raft.Update(func(txn *badger.Txn) error {
+		//for _, ent := range entries {
+			//key := []byte{1, 2}
+			//id := ps.region.Id
+			//for ; id > 0; id = id >> 8 {
+			//	key = append(key, byte(id))
+			//}
+			//key = append(key, 1)
+			//idx := ent.Index
+			//for ; idx > 0; idx = idx >> 8 {
+			//	key = append(key, byte(idx))
+			//}
+			//val := ent.Data
+			//if err := txn.Set(key, val); err != nil {
+			//	return err
+			//}
+		//}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -323,7 +349,17 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 	// and send RegionTaskApply task to region worker through ps.regionSched, also remember call ps.clearMeta
 	// and ps.clearExtraData to delete stale data
 	// Your Code Here (2C).
+
 	return nil, nil
+}
+
+func uint64ToBytes(num uint64) []byte {
+	var buf []byte
+	// TODO(wendongbo): index from 56 to 0
+	for i := 0; i < 64; i += 8 {
+		buf = append(buf, byte(num >> i))
+	}
+	return buf
 }
 
 // Save memory states to disk.
@@ -331,35 +367,98 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, error) {
 	// Hint: you may call `Append()` and `ApplySnapshot()` in this function
 	// Your Code Here (2B/2C).
-
+	log.Debugf("peerStorage[%d] SaveReadyState" , ps.region.Id)
 	res := &ApplySnapResult{
 		Region: ps.Region(),
 		PrevRegion: ps.Region(),
 	}
 	// save raft log and raft state
-	// (0x01 0x02 region_id 0x01 log_idx, Entry) (0x01 0x02 region_id 0x02, RaftLocalState)
-	wb := &engine_util.WriteBatch{
+	// (0x01 0x02 region_id 0x01 log_idx, Entry)
+	// (0x01 0x02 region_id 0x02, RaftLocalState)
+	wb := &engine_util.WriteBatch{}
+	regionIdBytes := uint64ToBytes(ps.region.Id)
+	key := []byte{1, 2}
+	key = append(key, regionIdBytes...)
+	log.Debugf("peerStorage[%d] SaveReadyState Entries:[%v]" , ps.region.Id, ready.Entries)
+	for _, ent := range ready.Entries {
+		// TODO(wendongbo): update logic
+		k := key
+		k = append(k, 1)
+		idxBytes := uint64ToBytes(ent.Index)
+		k = append(k, idxBytes...)
+		log.Debugf("write key:%v, entry:%s", k, ent.String())
+		dt, _ := ent.Marshal()
+		log.Debugf("write {key:%v, val:%v} into raft engine", k, dt)
+		err := wb.SetMeta(k, &ent)
+		if err != nil {
+			log.Errorf("%s", err.Error())
+		}
 
 	}
-	err := ps.Engines.Raft.Update(func(txn *badger.Txn) error {
-		ps.Engines.WriteRaft(wb)
+	k2 := append(key, 2)
+	dt, err := ready.HardState.Marshal()
+	log.Debugf("write hardstate:{k:%v,v:%v => {%v}}", k2, ready.HardState.String(), dt)
+	// TODO(wendongbo): don't do this, maybe can bot read
+	err = wb.SetMeta(k2, &ready.HardState)
+	if err != nil {
+		log.Errorf("%s", err.Error())
+	}
 
+	wb.MustWriteToDB(ps.Engines.Raft)
+
+	// TODO(wendongbo): read some logs from DB, let me know whether them write into badger or not
+	// how to read?
+	err = ps.Engines.Raft.View(func(txn *badger.Txn) error {
+		for _, ent := range ready.Entries {
+			k := key
+			k = append(k, 1)
+			idxBytes := uint64ToBytes(ent.Index)
+			k = append(k, idxBytes...)
+			item, err := txn.Get(k)
+			if err != nil {
+				return err
+			}
+			val, err := item.Value()
+			if err != nil {
+				return err
+			}
+			// TODO(wendongbo): value not equal to previously value?
+			log.Debugf("fetch recently written entry from raft engine {k:%v, v:%v}", k, val)
+		}
 		return nil
 	})
 	if err != nil {
-		return res, err
+		panic("read from raft engine err:" + err.Error())
 	}
 
-	// save apply state and region state
-	// (0x01 0x02 region_id 0x03, RaftApplyState) (0x01 0x03 region_id 0x01, RegionLocalState)
-	err = ps.Engines.Kv.Update(func(txn *badger.Txn) error {
+	// TODO: save apply state and region state
+	// (0x01 0x02 region_id 0x03, RaftApplyState)
+	// (0x01 0x03 region_id 0x01, RegionLocalState)
+	wb.Reset()
 
-
-		return nil
-	})
-	if err != nil {
-		return res, err
+	cf := engine_util.CfDefault
+	for _, ent := range ready.CommittedEntries {
+		req := raft_cmdpb.Request{}
+		err := req.Unmarshal(ent.Data)
+		if err != nil {
+			log.Errorf("%s", err)
+		}
+		switch req.CmdType {
+		case raft_cmdpb.CmdType_Put:
+			wb.SetCF(cf, req.Put.Key, req.Put.Value)
+			log.Debugf("committedEntries set put.key:%v, put.val:%v", string(engine_util.KeyWithCF(cf, req.Put.Key)), string(req.Put.Value))
+		case raft_cmdpb.CmdType_Delete:
+			wb.DeleteCF(cf, req.Delete.Key)
+		default:
+			log.Warnf("SaveReadyState not implements apply op: %d", req.CmdType)
+			log.Warnf("committedEntries:[%v]", ready.CommittedEntries)
+		}
 	}
+	log.Debugf("begin apply to raft state machine")
+	wb.MustWriteToDB(ps.Engines.Kv)
+
+	// TODO(wendongbo):  save RegionLocalState
+
 	return res, nil
 }
 

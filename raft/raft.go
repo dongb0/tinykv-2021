@@ -16,6 +16,7 @@ package raft
 
 import (
 	"errors"
+	pclog "github.com/pingcap-incubator/tinykv/log"
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 	"github.com/sirupsen/logrus"
 	"log"
@@ -163,6 +164,7 @@ type Raft struct {
 	rejectCount int
 }
 
+// TODO(wendongbo): replace all log/logrus with pingcap/log
 // newRaft return a raft peer with the given config
 func newRaft(c *Config) *Raft {
 	if err := c.validate(); err != nil {
@@ -213,7 +215,6 @@ func (r *Raft) sendAppend(to uint64) bool {
 	if err != nil {
 		return false
 	}
-
 	ent := r.RaftLog.entsAfterIndex(prevIndex + 1)
 	msg := pb.Message{
 		MsgType: pb.MessageType_MsgAppend,
@@ -226,13 +227,15 @@ func (r *Raft) sendAppend(to uint64) bool {
 		Commit: r.RaftLog.committed,
 	}
 	r.msgs = append(r.msgs, msg)
+	pclog.Debugf("leader[%d] term:%d sends append msg to peer[%d], msg:{%s}", r.id, r.Term, to, msg.String())
 	return true
 }
 
 func (r *Raft) sendVoteRequest(to uint64) {
 	logTerm, err := r.RaftLog.Term(r.RaftLog.LastIndex())
 	if err != nil {
-		logrus.Panicf("sendVoteRequest err: %s", err.Error())
+		pclog.Warnf("sendVoteRequest err: %s", err.Error())
+		logTerm = r.Term
 	}
 	msg := pb.Message{
 		MsgType: pb.MessageType_MsgRequestVote,
@@ -269,8 +272,6 @@ func (r *Raft) tick() {
 		if r.electionElapsed >= r.electionTimeout + rand.Intn(r.electionTimeout * 2){
 			logrus.Warnf("peer[%d] term:%d election timeout occur", r.id, r.Term)
 			// TODO(wendongbo): why does candidate have higher conflict rate?
-			//r.becomeCandidate()
-			//r.broadcastVoteRequest()
 			r.Step(pb.Message{
 				From: r.id,
 				To: r.id,
@@ -361,6 +362,7 @@ func (r *Raft) Step(m pb.Message) error {
 		switch m.MsgType {
 		case pb.MessageType_MsgPropose: // append logs to leader's entries
 			for _, ent := range m.Entries {
+				//initIndex := r.RaftLog.LastIndex()
 				ent.Term = r.Term
 				ent.Index = r.RaftLog.LastIndex() + 1
 				r.RaftLog.entries = append(r.RaftLog.entries, *ent)
@@ -398,11 +400,15 @@ func (r *Raft) Step(m pb.Message) error {
 				// update match index
 				r.Prs[m.From].Match = max(r.Prs[m.From].Match, m.Index)
 				r.Prs[m.From].Next = r.Prs[m.From].Match + 1
+
+				pclog.Debugf("leader[%d] knows peer[%d] accept up to [%d]", r.id, m.From, r.Prs[m.From].Match)
 				newCommit := r.checkCommitAt(r.Prs[m.From].Match)
 				if newCommit {
 					r.broadcastAppendEntries()
 				} else if r.Prs[m.From].Match < r.RaftLog.committed {
 					r.sendAppend(m.From)
+				} else {
+					pclog.Debugf("leader[%d] knows peer[%d] log up to date", r.id, m.From)
 				}
 			}
 		}
@@ -463,10 +469,11 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 
 		msg.Reject = false
 		msg.Index = r.RaftLog.LastIndex()
-		msg.Commit = r.RaftLog.committed
+		msg.Commit = r.RaftLog.committed // maybe no need to set
 	} else {
 		msg.Index = m.Index
 	}
+	log.Printf("peer[%d] term:%d append complete msg:%s", r.id, r.Term, msg.String())
 }
 
 // handleHeartbeat handle Heartbeat RPC request
@@ -508,8 +515,12 @@ func (r *Raft) handleVoteRequest(m pb.Message) {
 		Reject: true,
 	}
 	logTerm, err := r.RaftLog.Term(r.RaftLog.LastIndex())
-	if err != nil {
-		logrus.Panicf("handleVoteRequest err: %s", err.Error())
+	// TODO(wendongbo): under what condiction, LastIndex entry will not exist?
+	// 1. star up
+	// 2. anything else?
+	if err != nil {	// init state or ...(compact?
+		//logrus.Panicf("handleVoteRequest err: %s", err.Error())
+		logTerm = r.Term
 	}
 	if m.Term < r.Term ||  m.LogTerm < logTerm || m.LogTerm == logTerm && m.Index < r.RaftLog.LastIndex() {	// msg from stale peer
 		msg.Reject = true
@@ -585,6 +596,7 @@ func (r *Raft) broadcastAppendEntries(){
 }
 
 func (r *Raft) broadcastHeartbeat(){
+	r.heartbeatElapsed = 0
 	for to := range r.Prs {
 		if to != r.id {
 			r.sendHeartbeat(to)
@@ -616,11 +628,11 @@ func (r *Raft) checkCommitAt(index uint64) (newCommit bool){
 		r.id, r.Term, index, count)
 	logTerm, err := r.RaftLog.Term(index)
 	if err != nil {
-		logrus.Panicf("sendVoteRequest err: %s", err.Error())
+		pclog.Errorf("sendVoteRequest err: %s", err.Error())
 	}
 	if count > len(r.Prs) / 2 && r.RaftLog.committed < index && logTerm == r.Term{
 		r.updateCommit(index)
-		logrus.Infof("leader[%d] term:%d commit entry at index %d", r.id, r.Term, index)
+		pclog.Debugf("leader[%d] term:%d commit entry at index %d, leader last index:%d", r.id, r.Term, index, r.RaftLog.LastIndex())
 		return true
 	}
 	return false

@@ -3,6 +3,7 @@ package engine_util
 import (
 	"github.com/Connor1996/badger"
 	"github.com/golang/protobuf/proto"
+	"github.com/pingcap-incubator/tinykv/log"
 	"github.com/pingcap/errors"
 )
 
@@ -75,6 +76,7 @@ func (wb *WriteBatch) WriteToDB(db *badger.DB) error {
 	if len(wb.entries) > 0 {
 		err := db.Update(func(txn *badger.Txn) error {
 			for _, entry := range wb.entries {
+				log.Debugf("write batch writing entries:{k:%v,v:%v}", entry.Key, entry.Value)
 				var err1 error
 				if len(entry.Value) == 0 {
 					err1 = txn.Delete(entry.Key)

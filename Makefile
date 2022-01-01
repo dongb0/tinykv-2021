@@ -73,6 +73,9 @@ project2ab:
 project2ac:
 	$(GOTEST) ./raft -run 2AC
 
+project2b1:
+	$(GOTEST) ./kv/test_raftstore -run ^TestBasic2B$
+
 project2b:
 	$(GOTEST) ./kv/test_raftstore -run ^TestBasic2B$ || true
 	$(GOTEST) ./kv/test_raftstore -run ^TestConcurrent2B$ || true
@@ -93,9 +96,6 @@ project3: project3a project3b project3c
 
 project3a:
 	$(GOTEST) ./raft -run 3A
-
-project3b1:
-	$(GOTEST) ./kv/test_raftstore -run ^TestTransferLeader3B$
 
 project3b:
 	$(GOTEST) ./kv/test_raftstore -run ^TestTransferLeader3B$ || true

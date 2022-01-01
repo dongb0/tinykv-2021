@@ -5,4 +5,4 @@ unikv/unikv
 bin/*
 _tools
 /vendor
-tmp.log
+*.log

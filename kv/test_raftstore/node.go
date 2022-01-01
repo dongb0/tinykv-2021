@@ -208,11 +208,17 @@ func (c *NodeSimulator) CallCommandOnStore(storeID uint64, request *raft_cmdpb.R
 	c.RUnlock()
 
 	cb := message.NewCallback()
+	log.Debugf("Node Simulator sending request: %s", request.String())
 	err := router.SendRaftCommand(request, cb)
 	if err != nil {
 		return nil, nil
 	}
-
+	log.Debugf("Node Simulator wait for response with timeout:%.2f", timeout.Seconds())
 	resp := cb.WaitRespWithTimeout(timeout)
+	if resp != nil {
+		log.Debugf("Node Simulator get response:%v", *resp)
+	} else {
+		log.Debugf("Node Simulator get nil response")
+	}
 	return resp, cb.Txn
 }
