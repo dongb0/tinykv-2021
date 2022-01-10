@@ -375,6 +375,7 @@ func (r *Raft) Step(m pb.Message) error {
 				r.Prs[r.id].Match = r.RaftLog.LastIndex()
 				r.Prs[r.id].Next = r.RaftLog.LastIndex() + 1
 				pclog.Debugf("leader[%d] term:%d propose %v At Index %d", r.id, r.Term, ent, ent.Index)
+
 			}
 			if len(r.Prs) != 1 {
 				r.broadcastAppendEntries()
@@ -473,7 +474,6 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 		}
 		// set commit index to min(m.committed, index of last message entry)
 		r.updateCommit(min(m.Commit, endEntryIdx))
-
 		msg.Reject = false
 		msg.Index = r.RaftLog.LastIndex()
 		msg.Commit = r.RaftLog.committed // maybe no need to set
@@ -486,7 +486,6 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 // handleHeartbeat handle Heartbeat RPC request
 func (r *Raft) handleHeartbeat(m pb.Message) {
 	// Your Code Here (2A).
-
 	pclog.Debugf("peer[%d] handling heartbeat from p[%d] term:%d\n", r.id, m.From, m.Term)
 
 	// ignore stale heartbeat

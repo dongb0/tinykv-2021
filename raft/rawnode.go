@@ -179,7 +179,6 @@ func (rn *RawNode) Ready() Ready {
 		rd.Vote = rn.Raft.Vote
 		rd.Commit = rn.Raft.RaftLog.committed
 	}
-	//log.Debugf("rawnode[%d] term:%d RawNode ready() return:%v", rn.Raft.id, rn.Raft.Term, rd)
 	return rd
 }
 
@@ -219,7 +218,6 @@ func (rn *RawNode) Advance(rd Ready) {
 	if rd.Term != 0 || rd.Vote != 0 || rd.Commit != 0 {
 		rn.lastReady.HardState = rd.HardState
 	}
-
 	// TODO(wendongbo): opt, can we just erase all message?
 	lastEntIdx := len(rd.Messages) - 1
 	if lastEntIdx >= 0  {
