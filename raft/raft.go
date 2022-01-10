@@ -173,7 +173,7 @@ func newRaft(c *Config) *Raft {
 	// Your Code Here (2A).
 
 	hardState, confState, _ := c.Storage.InitialState()
-	//hardState, _, _ := c.Storage.InitialState()
+	pclog.Debugf("peer[%d] build from hard state:%s", c.ID, hardState.String())
 	prs := make(map[uint64]*Progress)
 	votes := make(map[uint64]bool)
 	for _, v := range c.peers {
@@ -264,13 +264,12 @@ func (r *Raft) sendHeartbeat(to uint64) {
 // tick advances the internal logical clock by a single tick.
 func (r *Raft) tick() {
 	// Your Code Here (2A).
-	r.heartbeatElapsed++
-	r.electionElapsed++
-	log.Printf("peer[%d] term:%d hElapsed:%d, eElapsed:%d, hTimeout:%d, eTimeout:%d", r.id, r.Term, r.heartbeatElapsed, r.electionElapsed, r.heartbeatTimeout, r.electionTimeout)
 	switch r.State {
 	case StateFollower, StateCandidate:
-		if r.electionElapsed >= r.electionTimeout + rand.Intn(r.electionTimeout * 2){
-			logrus.Warnf("peer[%d] term:%d election timeout occur", r.id, r.Term)
+		r.electionElapsed++
+		curTimeCount := r.electionTimeout + rand.Intn(r.electionTimeout * 2)
+		if r.electionElapsed >= curTimeCount{
+			logrus.Warnf("peer[%d] term:%d election timeout occur(curTime:%d>timeout:%d)", r.id, r.Term, curTimeCount, r.electionTimeout)
 			// TODO(wendongbo): why does candidate have higher conflict rate?
 			r.Step(pb.Message{
 				From: r.id,
@@ -279,6 +278,7 @@ func (r *Raft) tick() {
 			})
 		}
 	case StateLeader:
+		r.heartbeatElapsed++
 		if r.heartbeatElapsed >= r.heartbeatTimeout {
 			r.broadcastHeartbeat()
 		}
@@ -312,10 +312,15 @@ func (r *Raft) becomeCandidate() {
 func (r *Raft) becomeLeader() {
 	// Your Code Here (2A).
 	// NOTE: Leader should propose a noop entry on its term
+	r.Lead = r.id
 	r.State = StateLeader
 	r.RaftLog.entries = append(r.RaftLog.entries, pb.Entry{ Term: r.Term , Index: r.RaftLog.LastIndex() + 1 })
 	r.initPrs()
-	log.Printf("peer[%d] comes to power at term %d\n", r.id, r.Term)
+	pclog.Infof("peer[%d] comes to power at term %d, with index(commit:%d, apply:%d):%d\n", r.id, r.Term, r.RaftLog.committed, r.RaftLog.applied, r.RaftLog.LastIndex())
+	if len(r.RaftLog.entries) != 0 {
+		index := maxInt(r.RaftLog.getArrayIndex(r.RaftLog.LastIndex()), 0)
+		pclog.Debugf("last entries:%v", r.RaftLog.entries[index:])
+	}
 }
 
 // sends heartbeat and append log entries
@@ -329,7 +334,7 @@ func (r *Raft) leaderResponsibility(){
 // on `eraftpb.proto` for what msgs should be handled
 func (r *Raft) Step(m pb.Message) error {
 	// Your Code Here (2A).
-	log.Printf("peer[%d]-term:%d Step recv:[%s]\n", r.id, r.Term, m.String())
+	pclog.Infof("peer[%d]-term:%d Step recv:[%s]", r.id, r.Term, m.String())
 	switch r.State {
 	case StateFollower:
 		switch m.MsgType {
@@ -354,6 +359,7 @@ func (r *Raft) Step(m pb.Message) error {
 			goto HeartBeat
 		case pb.MessageType_MsgAppend:
 			if m.Term >= r.Term {
+				// TODO(wendongbo): redundant in handleAppend
 				r.becomeFollower(m.Term, None)
 			}
 			goto Append
@@ -368,6 +374,7 @@ func (r *Raft) Step(m pb.Message) error {
 				r.RaftLog.entries = append(r.RaftLog.entries, *ent)
 				r.Prs[r.id].Match = r.RaftLog.LastIndex()
 				r.Prs[r.id].Next = r.RaftLog.LastIndex() + 1
+				pclog.Debugf("leader[%d] term:%d propose %v At Index %d", r.id, r.Term, ent, ent.Index)
 			}
 			if len(r.Prs) != 1 {
 				r.broadcastAppendEntries()
@@ -400,16 +407,16 @@ func (r *Raft) Step(m pb.Message) error {
 				// update match index
 				r.Prs[m.From].Match = max(r.Prs[m.From].Match, m.Index)
 				r.Prs[m.From].Next = r.Prs[m.From].Match + 1
-
-				pclog.Debugf("leader[%d] knows peer[%d] accept up to [%d]", r.id, m.From, r.Prs[m.From].Match)
 				newCommit := r.checkCommitAt(r.Prs[m.From].Match)
+				uptodate := false
 				if newCommit {
 					r.broadcastAppendEntries()
 				} else if r.Prs[m.From].Match < r.RaftLog.committed {
 					r.sendAppend(m.From)
 				} else {
-					pclog.Debugf("leader[%d] knows peer[%d] log up to date", r.id, m.From)
+					uptodate = true
 				}
+				pclog.Debugf("leader[%d] knows peer[%d] accept up to [%d], up to date:%t", r.id, m.From, r.Prs[m.From].Match, uptodate)
 			}
 		}
 	}
@@ -440,8 +447,8 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 	if m.Term >= r.Term {
 		r.becomeFollower(m.Term, m.From)
 	} else {
-		logrus.Warnf("peer[%d] term:%d recv stale append from id:%d term:%d [%s], reject append",
-			r.id, r.Term, m.From, m.Term, m.String())
+		//logrus.Warnf("peer[%d] term:%d recv stale append from id:%d term:%d, reject append",
+		//	r.id, r.Term, m.From, m.Term)
 		return
 	}
 	msg := pb.Message{
@@ -473,18 +480,18 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 	} else {
 		msg.Index = m.Index
 	}
-	log.Printf("peer[%d] term:%d append complete msg:%s", r.id, r.Term, msg.String())
+	pclog.Debugf("peer[%d] term:%d append complete msg:%s", r.id, r.Term, msg.String())
 }
 
 // handleHeartbeat handle Heartbeat RPC request
 func (r *Raft) handleHeartbeat(m pb.Message) {
 	// Your Code Here (2A).
 
-	log.Printf("peer[%d] handling heartbeat from p[%d] term:%d\n", r.id, m.From, m.Term)
+	pclog.Debugf("peer[%d] handling heartbeat from p[%d] term:%d\n", r.id, m.From, m.Term)
 
 	// ignore stale heartbeat
 	if m.Term < r.Term {
-		logrus.Warnf("peer[%d] t:%d recv unexpected heartbeat from id:%d term:%d\n", r.id, r.Term, m.From, m.Term)
+		pclog.Warnf("peer[%d] t:%d recv unexpected heartbeat from id:%d term:%d\n", r.id, r.Term, m.From, m.Term)
 		return
 	}
 	r.becomeFollower(m.Term, m.From)
@@ -519,7 +526,6 @@ func (r *Raft) handleVoteRequest(m pb.Message) {
 	// 1. star up
 	// 2. anything else?
 	if err != nil {	// init state or ...(compact?
-		//logrus.Panicf("handleVoteRequest err: %s", err.Error())
 		logTerm = r.Term
 	}
 	if m.Term < r.Term ||  m.LogTerm < logTerm || m.LogTerm == logTerm && m.Index < r.RaftLog.LastIndex() {	// msg from stale peer
@@ -530,12 +536,12 @@ func (r *Raft) handleVoteRequest(m pb.Message) {
 	} else {
 		logrus.Warnf("unhandle situation in vote request[%s]", m.String())
 	}
-	log.Printf("peer[%d] term:%d handling vote req:[%s], reject:%t\n", r.id, r.Term, m.String(), msg.Reject)
+	pclog.Debugf("peer[%d] term:%d handling vote req:[%s], self last-index:%d, reject:%t\n", r.id, r.Term, m.String(), r.RaftLog.LastIndex(), msg.Reject)
 	r.msgs = append(r.msgs, msg)
 }
 
 func (r *Raft) handleVoteResponse(m pb.Message) {
-	log.Printf("peer[%d] handling vote response:[%s]\n", r.id, m.String())
+	pclog.Debugf("peer[%d] handling vote response:[%s]\n", r.id, m.String())
 	if m.Term < r.Term { 	// stale vote response
 		return
 	}
@@ -552,7 +558,7 @@ func (r *Raft) handleVoteResponse(m pb.Message) {
 			voteCnt++
 		}
 	}
-	log.Printf("peer[%d] gets %d votes at term %d\n", r.id, voteCnt, r.Term)
+	pclog.Debugf("peer[%d] gets %d votes at term %d\n", r.id, voteCnt, r.Term)
 	if voteCnt > peerNum / 2 && r.State == StateCandidate { // avoid sending msg twice
 		r.becomeLeader()
 		r.leaderResponsibility()
@@ -581,6 +587,7 @@ func (r *Raft) initPrs() {
 			r.Prs[i].Match = r.RaftLog.LastIndex()
 			r.Prs[i].Next = r.RaftLog.LastIndex() + 1
 		} else {
+			// TODO(wendongbo): should we start from 0? any optimization?
 			r.Prs[i].Match = 0
 			r.Prs[i].Next = 1
 		}
@@ -607,7 +614,7 @@ func (r *Raft) broadcastHeartbeat(){
 func (r *Raft) broadcastVoteRequest() {
 	for to := range r.votes {
 		if to != r.id {
-			log.Printf("p[%d] Term:%d send vote request to peer[%d]", r.id, r.Term, to)
+			log.Printf("p[%d] Term:%d send vote request to peer[%d] index:%d, term:%d", r.id, r.Term, to, r.RaftLog.LastIndex(), r.Term)
 			r.sendVoteRequest(to)
 		}
 	}
@@ -624,8 +631,8 @@ func (r *Raft) checkCommitAt(index uint64) (newCommit bool){
 			count++
 		}
 	}
-	logrus.Infof("leader[%d] term %d checking commit status at index[%d], replica count:%d",
-		r.id, r.Term, index, count)
+	logrus.Infof("leader[%d] term %d checking commit status at index[%d], committed:%d, replica count:%d",
+		r.id, r.Term, index, r.RaftLog.committed, count)
 	logTerm, err := r.RaftLog.Term(index)
 	if err != nil {
 		pclog.Errorf("sendVoteRequest err: %s", err.Error())

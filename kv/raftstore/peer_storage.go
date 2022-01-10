@@ -353,40 +353,22 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 	return nil, nil
 }
 
-func uint64ToBytes(num uint64) []byte {
-	var buf []byte
-	// TODO(wendongbo): index from 56 to 0
-	for i := 0; i < 64; i += 8 {
-		buf = append(buf, byte(num >> i))
-	}
-	return buf
-}
-
 // Save memory states to disk.
 // Do not modify ready in this function, this is a requirement to advance the ready object properly later.
 func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, error) {
 	// Hint: you may call `Append()` and `ApplySnapshot()` in this function
 	// Your Code Here (2B/2C).
-	log.Debugf("peerStorage[%d] SaveReadyState" , ps.region.Id)
+	log.Debugf("peerStorage SaveReadyState")
 	res := &ApplySnapResult{
 		Region: ps.Region(),
 		PrevRegion: ps.Region(),
 	}
 	// save raft log and raft state
-	// (0x01 0x02 region_id 0x01 log_idx, Entry)
-	// (0x01 0x02 region_id 0x02, RaftLocalState)
 	wb := &engine_util.WriteBatch{}
-	regionIdBytes := uint64ToBytes(ps.region.Id)
-	key := []byte{1, 2}
-	key = append(key, regionIdBytes...)
-	log.Debugf("peerStorage[%d] SaveReadyState Entries:[%v]" , ps.region.Id, ready.Entries)
+	log.Debugf("peerStorage SaveReadyState Entries(len:%d):%v" , len(ready.Entries), ready.Entries)
 	for _, ent := range ready.Entries {
 		// TODO(wendongbo): update logic
-		k := key
-		k = append(k, 1)
-		idxBytes := uint64ToBytes(ent.Index)
-		k = append(k, idxBytes...)
-		log.Debugf("write key:%v, entry:%s", k, ent.String())
+		k := meta.RaftLogKey(ps.region.Id, ent.Index)
 		dt, _ := ent.Marshal()
 		log.Debugf("write {key:%v, val:%v} into raft engine", k, dt)
 		err := wb.SetMeta(k, &ent)
@@ -395,48 +377,30 @@ func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, erro
 		}
 
 	}
-	k2 := append(key, 2)
-	dt, err := ready.HardState.Marshal()
-	log.Debugf("write hardstate:{k:%v,v:%v => {%v}}", k2, ready.HardState.String(), dt)
-	// TODO(wendongbo): don't do this, maybe can bot read
-	err = wb.SetMeta(k2, &ready.HardState)
-	if err != nil {
-		log.Errorf("%s", err.Error())
-	}
 
-	wb.MustWriteToDB(ps.Engines.Raft)
-
-	// TODO(wendongbo): read some logs from DB, let me know whether them write into badger or not
-	// how to read?
-	err = ps.Engines.Raft.View(func(txn *badger.Txn) error {
-		for _, ent := range ready.Entries {
-			k := key
-			k = append(k, 1)
-			idxBytes := uint64ToBytes(ent.Index)
-			k = append(k, idxBytes...)
-			item, err := txn.Get(k)
-			if err != nil {
-				return err
-			}
-			val, err := item.Value()
-			if err != nil {
-				return err
-			}
-			// TODO(wendongbo): value not equal to previously value?
-			log.Debugf("fetch recently written entry from raft engine {k:%v, v:%v}", k, val)
+	if ready.Term != 0 || ready.Commit != 0 {
+		k2 := meta.RaftStateKey(ps.region.Id)
+		// TODO(wendongbo): performance degradation if we point to inner struct directly?
+		//ps.raftState.HardState.Term = ready.Term
+		//ps.raftState.HardState.Commit = ready.Commit
+		//ps.raftState.HardState.Vote = ready.Vote
+		ps.raftState.HardState = &ready.HardState
+		ps.raftState.LastTerm = ready.Term
+		if len(ready.Entries) > 0 {
+			ps.raftState.LastIndex = ready.Entries[len(ready.Entries) - 1].Index
 		}
-		return nil
-	})
-	if err != nil {
-		panic("read from raft engine err:" + err.Error())
+
+		if err := wb.SetMeta(meta.RaftStateKey(ps.region.Id), ps.raftState); err != nil {
+			log.Errorf("%s", err.Error())
+		}
+		wb.MustWriteToDB(ps.Engines.Raft)
+		log.Debugf("write raftLocalState:{k:%v,v:%v}", k2, ps.raftState.String())
 	}
 
 	// TODO: save apply state and region state
-	// (0x01 0x02 region_id 0x03, RaftApplyState)
-	// (0x01 0x03 region_id 0x01, RegionLocalState)
 	wb.Reset()
 
-	//cf := engine_util.CfDefault
+	log.Debugf("peerStorage SaveReadyState CommittedEntries(%d):%v" , ready.CommittedEntries, ready.CommittedEntries)
 	for _, ent := range ready.CommittedEntries {
 		req := raft_cmdpb.Request{}
 		err := req.Unmarshal(ent.Data)
@@ -452,13 +416,12 @@ func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, erro
 			cf := req.Delete.Cf
 			wb.DeleteCF(cf, req.Delete.Key)
 		default:
-			log.Warnf("SaveReadyState not implements apply op: %d", req.CmdType)
-			log.Warnf("committedEntries:[%v]", ready.CommittedEntries)
+			log.Warnf("SaveReadyState not implements apply op: %d, ent:%v", req.CmdType, ent)
 		}
 	}
-	log.Debugf("begin apply to raft state machine")
 	wb.MustWriteToDB(ps.Engines.Kv)
 
+	log.Debugf("peerStorage SaveReadyState check complete, local state:%v", ps.raftState)
 	// TODO(wendongbo):  save RegionLocalState
 
 	return res, nil

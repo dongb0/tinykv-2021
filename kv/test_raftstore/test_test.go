@@ -221,12 +221,12 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 			}()
 			last := ""
 			for atomic.LoadInt32(&done_clients) == 0 {
-				log.Debugf("should be new request to peer store")
 				if (rand.Int() % 1000) < 500 {
 					key := strconv.Itoa(cli) + " " + fmt.Sprintf("%08d", j)
 					value := "x " + strconv.Itoa(cli) + " " + strconv.Itoa(j) + " y"
 					log.Infof("%d: client new put %v,%v\n", cli, key, value)
 					cluster.MustPut([]byte(key), []byte(value))
+					log.Infof("%d: client new put %v,%v success", cli, key, value)
 					last = NextValue(last, value)
 					j++
 				} else {
@@ -234,6 +234,7 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 					end := strconv.Itoa(cli) + " " + fmt.Sprintf("%08d", j)
 					log.Infof("%d: client new scan %v-%v\n", cli, start, end)
 					values := cluster.Scan([]byte(start), []byte(end))
+					log.Infof("%d: client new scan %v-%v complete\n", cli, start, end)
 					v := string(bytes.Join(values, []byte("")))
 					if v != last {
 						log.Fatalf("get wrong value, client %v\nwant:%v\ngot: %v\n", cli, last, v)
@@ -272,14 +273,15 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 		<-ch_clients
 
 		if crash {
-			log.Warnf("shutdown servers\n")
+			log.Debugf("shutdown servers\n")
 			for i := 1; i <= nservers; i++ {
 				cluster.StopServer(uint64(i))
 			}
+			log.Debugf("shutdown server done, sleep %s", electionTimeout.String())
 			// Wait for a while for servers to shutdown, since
 			// shutdown isn't a real crash and isn't instantaneous
 			time.Sleep(electionTimeout)
-			log.Warnf("restart servers\n")
+			log.Debugf("restart servers\n")
 			// crash and re-start all
 			for i := 1; i <= nservers; i++ {
 				cluster.StartServer(uint64(i))
@@ -287,12 +289,10 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 		}
 
 		for cli := 0; cli < nclients; cli++ {
-			// log.Printf("read from clients %d\n", cli)
+			log.Debugf("read from clients %d\n", cli)
 			j := <-clnts[cli]
+			log.Debugf("client %d managed to perform %d put operations\n", cli, j)
 
-			// if j < 10 {
-			// 	log.Printf("Warning: client %d managed to perform only %d put operations in 1 sec?\n", i, j)
-			// }
 			start := strconv.Itoa(cli) + " " + fmt.Sprintf("%08d", 0)
 			end := strconv.Itoa(cli) + " " + fmt.Sprintf("%08d", j)
 			values := cluster.Scan([]byte(start), []byte(end))
@@ -345,6 +345,7 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 				t.Fatalf("region is not split")
 			}
 		}
+		log.Infof("Iteration %v complete", i)
 	}
 }
 

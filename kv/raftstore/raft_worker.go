@@ -1,7 +1,6 @@
 package raftstore
 
 import (
-	"log"
 	"sync"
 
 	"github.com/pingcap-incubator/tinykv/kv/raftstore/message"
@@ -41,7 +40,6 @@ func (rw *raftWorker) run(closeCh <-chan struct{}, wg *sync.WaitGroup) {
 			return
 		case msg := <-rw.raftCh:
 			msgs = append(msgs, msg)
-			log.Printf("handler handling msg:%v\n", msg)
 		}
 		pending := len(rw.raftCh)
 		for i := 0; i < pending; i++ {

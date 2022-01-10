@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"github.com/Connor1996/badger"
 	"github.com/pingcap-incubator/tinykv/kv/util/engine_util"
+	"github.com/pingcap-incubator/tinykv/proto/pkg/errorpb"
 	"time"
 
 	"github.com/Connor1996/badger/y"
@@ -40,6 +41,28 @@ func newPeerMsgHandler(peer *peer, ctx *GlobalContext) *peerMsgHandler {
 	}
 }
 
+func findProposalIndex(index, term uint64 , arr []*proposal) int {
+	for i, a := range arr {
+		if index == a.index && term == a.term {
+			return i
+		}
+	}
+	return -1
+}
+
+func deleteAt(index int, arr []*proposal) []*proposal {
+	if index < 0 || index >= len(arr) {
+		return arr
+	}
+	if index == 0 {
+		return arr[1:]
+	}
+	if index == len(arr) - 1 {
+		return arr[:len(arr) - 1]
+	}
+	return append(arr[:index], arr[index + 1:]...)
+}
+
 func findProposal(index, term uint64 , arr []*proposal) *proposal{
 	for _, a := range arr {
 		if index == a.index && term == a.term {
@@ -56,52 +79,73 @@ func (d *peerMsgHandler) HandleRaftReady() {
 	// Your Code Here (2B).
 	if d.RaftGroup.HasReady() {
 		rd := d.RaftGroup.Ready()
-		log.Debugf("peer[%d] term:%d HandleRaftReady handling ready:%v", d.PeerId(), d.RaftGroup.Raft.Term, rd)
+		log.Debugf("peer[%d] term:%d HandleRaftReady handling ready entry:%v, committed:%v", d.PeerId(), d.RaftGroup.Raft.Term, rd.Entries, rd.CommittedEntries)
+
+		if !d.IsLeader() {
+			log.Debugf("follower[%d]T:%d applying to state machine", d.PeerId(), d.Term())
+		}
+
 		_, err := d.peerStorage.SaveReadyState(&rd) // TODO(wendongbo): not fully implemented
 		if err != nil {
 			log.Errorf("apply raft ready err:%v", err)
 		}
-
 		d.Send(d.ctx.trans, rd.Messages)
 		d.RaftGroup.Advance(rd)
 
-		// response to client when majority response(recv appendResponse)
+		// response to client when majority write operation response
+		// 0. only leader can use propose to response
 		// 1. find corresponding proposal
 		// 2. construct response
 		// 3. Done
 		for _, ent := range rd.CommittedEntries {
-			p := findProposal(ent.Index, ent.Term, d.proposals)
-			if p == nil {
-				log.Debugf("no corresponding proposal idx:%d,term:%d, proposals:%v", ent.Index, ent.Term, d.proposals)
+			index := findProposalIndex(ent.Index, ent.Term, d.proposals)
+			if index == -1 {
 				continue
 			}
-			log.Debugf("peer[%d] term:%d proposal[idx:%d,term:%d] done", d.PeerId(), d.Term(), ent.Index, ent.Term)
+			p := d.proposals[index]
+			d.proposals = deleteAt(index, d.proposals)
 
 			resp := newCmdResp()
 			req := raft_cmdpb.Request{}
-			err := req.Unmarshal(ent.Data)
-			if err != nil {
-				log.Errorf("%s", err.Error())
-			}
-			if req.CmdType == raft_cmdpb.CmdType_Invalid{
-				log.Warnf("invalid cmd type, req:%v", req)
+
+			if d.LeaderId() != d.PeerId() {
+				resp.Header.Error = &errorpb.Error{
+					NotLeader: &errorpb.NotLeader{},
+				}
+				p.cb.Done(resp)
+				log.Debugf("peer[%d] term:%d is no longer leader(%d), should return nil response, cur:%v => lead", d.PeerId(), d.Term(), d.LeaderId(), d.Meta)
 				continue
+				// TODO(wendongbo): useless
+				// but what if peer becomes follower while processing msg? Is is possible?
 			}
 
+			if err := req.Unmarshal(ent.Data); err != nil || req.CmdType == raft_cmdpb.CmdType_Invalid{
+				log.Errorf("unmarshal request err:[%s] or invalid request type", err.Error())
+				continue
+			}
 			log.Debugf("unmarshal request:%v", req)
-			resp.Responses = []*raft_cmdpb.Response{
-				{CmdType: req.CmdType},
+			resp.Responses = []*raft_cmdpb.Response{{CmdType: req.CmdType}}
+			switch req.CmdType {
+			case raft_cmdpb.CmdType_Put:
+				// DEBUG
+				log.Debugf("peer[%d] term:%d proposal[idx:%d,term:%d] val:%s done, local state:%v", d.PeerId(), d.Term(), ent.Index, ent.Term, req.Put.Value, d.peerStorage.raftState)
+				cf := req.Put.Cf
+				DebugGetDBValue(d.peerStorage.Engines.Kv, engine_util.KeyWithCF(cf, req.Put.Key))
+				// DEBUG
+			case raft_cmdpb.CmdType_Delete:
+
+			case raft_cmdpb.CmdType_Snap:
+				resp.Responses[0].Snap = &raft_cmdpb.SnapResponse{Region: d.Region()}
+			case raft_cmdpb.CmdType_Get:
+				// TODO(wendongbo):
 			}
 			p.cb.Txn = d.peerStorage.Engines.Kv.NewTransaction(false)
 			p.cb.Done(resp)
 		}
-	} else {
-		log.Debugf("no new ready to handle")
 	}
 }
 
 func (d *peerMsgHandler) HandleMsg(msg message.Msg) {
-	log.Debugf("p[%d] HandleMsg:%v", d.PeerId(), msg)
 	switch msg.Type {
 	case message.MsgTypeRaftMessage:
 		raftMsg := msg.Data.(*rspb.RaftMessage)
@@ -163,26 +207,6 @@ func (d *peerMsgHandler) preProposeRaftCommand(req *raft_cmdpb.RaftCmdRequest) e
 	return err
 }
 
-func debugIterateDB(db *badger.DB) {
-	err := db.View(func(txn *badger.Txn) error {
-		iter := txn.NewIterator(badger.DefaultIteratorOptions)
-		for iter.Rewind(); iter.Valid(); iter.Next() {
-			item := iter.Item()
-			key := item.Key()
-			val, err := item.Value()
-			if err != nil {
-				return err
-			}
-			log.Debugf("iterating {k:%v=>%s, v:%v=>%s}", key, key, val, val)
-		}
-		iter.Close()
-		return nil
-	})
-	if err != nil {
-		log.Errorf("%v", err)
-	}
-}
-
 func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *message.Callback) {
 	err := d.preProposeRaftCommand(msg)
 	if err != nil {
@@ -223,32 +247,53 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 			resp.Responses = []*raft_cmdpb.Response{res}
 			cb.Done(resp)
 
+		case raft_cmdpb.CmdType_Snap:
+			fallthrough
 		case raft_cmdpb.CmdType_Put, raft_cmdpb.CmdType_Delete:	// PUT/DELETE response no return val
-			// TODO(wendongbo): one request, one response
 			data, err := req.Marshal()
 			if err != nil {
 				log.Errorf("proposeRaftCmd err: %s", err.Error())
 			}
 			index := d.RaftGroup.Raft.RaftLog.LastIndex() + 1
 			d.proposals = append(d.proposals, &proposal{term: d.Term(), index: index, cb: cb})
-			log.Debugf("peer[%d]term:%d add proposal idx:%d, term:%d", d.PeerId(), d.Term(), index, d.Term())
-			err = d.RaftGroup.Propose(data)
-			if err != nil {
+			log.Debugf("peer[%d]term:%d add proposal idx:%d, term:%d, req:%v", d.PeerId(), d.Term(), index, d.Term(), req)
+			if err := d.RaftGroup.Propose(data); err != nil {
 				log.Errorf("proposeRaftCmd err: %s", err.Error())
 			}
 
-		case raft_cmdpb.CmdType_Snap:
-			// read from leader, we can return immediately
-			res := &raft_cmdpb.Response{
-				CmdType: raft_cmdpb.CmdType_Snap,
-				Snap: &raft_cmdpb.SnapResponse{Region: d.Region()},
-			}
-			resp := newCmdResp()
-			resp.Responses = []*raft_cmdpb.Response{res}
-			cb.Txn = d.peerStorage.Engines.Kv.NewTransaction(false)
-			cb.Done(resp)
+		//case raft_cmdpb.CmdType_Snap:
+		//	// TODO(wendongbo): currently we found out that, at least we need to wait for current leader commit first entry(commit entry from previous term)
+		//	// Has other situation?
+		//	// If client request entry at this term, can we return immediately?
+		//	// yes, because pending put cmd will not be seem at client
+		//	// Only leader can response(so maybe we cannot response here?)
+		//	// TODO(wendongbo): any opt?
+		//
+		//	res := &raft_cmdpb.Response{
+		//		CmdType: raft_cmdpb.CmdType_Snap,
+		//		Snap: &raft_cmdpb.SnapResponse{Region: d.Region()},
+		//	}
+		//	resp := newCmdResp()
+		//	resp.Responses = []*raft_cmdpb.Response{res}
+		//	waitCount := 0
+		//	for ; waitCount < 10 && !d.commitOldTermEntry(); waitCount++{
+		//		time.Sleep(20 * time.Millisecond)
+		//	}
+		//	cb.Txn = d.peerStorage.Engines.Kv.NewTransaction(false)
+		//	cb.Done(resp)
 		}
 	}
+}
+
+func (d *peerMsgHandler) commitOldTermEntry() bool {
+	lastIndex := d.RaftGroup.Raft.RaftLog.LastIndex()
+	term, err := d.RaftGroup.Raft.RaftLog.Term(lastIndex)
+	if err != nil {
+		log.Errorf("get log term err:%s", err.Error())
+		return false
+	}
+	log.Debugf("peer[%d] term:%d last index term:%d, commit old:%t", d.PeerId(), d.Term(), term, term==d.Term())
+	return term == d.Term()
 }
 
 func (d *peerMsgHandler) onTick() {
@@ -297,8 +342,6 @@ func (d *peerMsgHandler) ScheduleCompactLog(truncatedIndex uint64) {
 }
 
 func (d *peerMsgHandler) onRaftMsg(msg *rspb.RaftMessage) error {
-	log.Debugf("%s handle raft message %s from %d to %d",
-		d.Tag, msg.GetMessage().GetMsgType(), msg.GetFromPeer().GetId(), msg.GetToPeer().GetId())
 	if !d.validateRaftMessage(msg) {
 		return nil
 	}
@@ -705,4 +748,44 @@ func newCompactLogRequest(regionID uint64, peer *metapb.Peer, compactIndex, comp
 		},
 	}
 	return req
+}
+
+// ------------------------------------
+func DebugIterateDB(db *badger.DB) {
+	err := db.View(func(txn *badger.Txn) error {
+		iter := txn.NewIterator(badger.DefaultIteratorOptions)
+		for iter.Rewind(); iter.Valid(); iter.Next() {
+			item := iter.Item()
+			key := item.Key()
+			val, err := item.Value()
+			if err != nil {
+				return err
+			}
+			log.Debugf("iterating {k:%v=>%s, v:%v=>%s}", key, key, val, val)
+		}
+		iter.Close()
+		return nil
+	})
+	if err != nil {
+		log.Errorf("%v", err)
+	}
+}
+
+func DebugGetDBValue(db *badger.DB, key []byte) (val []byte) {
+	err := db.View(func(txn *badger.Txn) error {
+		item, err := txn.Get(key)
+		if err != nil {
+			return err
+		}
+		val, err = item.Value()
+		if err != nil {
+			return err
+		}
+		log.Debugf("debug get {k:%v=>%s, v:%v=>%s}", key, key, val, val)
+		return nil
+	})
+	if err != nil {
+		log.Errorf("debug get value error, key:%v=>%s", key, key)
+	}
+	return val
 }

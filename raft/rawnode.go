@@ -16,7 +16,6 @@ package raft
 
 import (
 	"errors"
-
 	"github.com/pingcap-incubator/tinykv/log"
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 	"reflect"
@@ -157,22 +156,16 @@ func (rn *RawNode) Step(m pb.Message) error {
 func (rn *RawNode) Ready() Ready {
 	// Your Code Here (2A).
 	msgs := rn.Raft.msgs
-	log.Debugf("rawnode[%d] term:%d ready get msgs:%v", rn.Raft.id, rn.Raft.Term, msgs)
 	if len(msgs) == 0 {	// if not set to nil, TestRawNodeReset2AC will fail
 		msgs = nil
 	}
 	unstableEnts := rn.Raft.RaftLog.unstableEntries()
 	nextEnts := rn.Raft.RaftLog.nextEnts()
-	//log.Debugf("p[%d] term:%d unstable entries(stableIndex:%d):%v", rn.Raft.id, rn.Raft.Term, rn.Raft.RaftLog.stabled, unstableEnts)
-	//log.Debugf("p[%d] term:%d next entries to apply(applyIndex:%d, committed:%d):%v", rn.Raft.id, rn.Raft.Term, rn.Raft.RaftLog.applied, rn.Raft.RaftLog.committed, nextEnts)
 	rd := Ready{
 		Entries:          unstableEnts,
 		CommittedEntries: nextEnts,
 		Messages:         msgs,
 	}
-	//log.Debugf("unstableEnts(len:%d):%v", len(rd.Entries), rd.Entries)
-	//log.Debugf("nextEnts(len:%d):%v", len(rd.CommittedEntries), rd.CommittedEntries)
-
 	// soft state
 	//if rn.lastReady.SoftState == nil  || rn.lastReady.Lead != rn.Raft.Lead || rn.lastReady.RaftState != rn.Raft.State {
 	//	rd.SoftState = &SoftState{
@@ -186,7 +179,7 @@ func (rn *RawNode) Ready() Ready {
 		rd.Vote = rn.Raft.Vote
 		rd.Commit = rn.Raft.RaftLog.committed
 	}
-	log.Debugf("rawnode[%d] term:%d RawNode ready() return:%v", rn.Raft.id, rn.Raft.Term, rd)
+	//log.Debugf("rawnode[%d] term:%d RawNode ready() return:%v", rn.Raft.id, rn.Raft.Term, rd)
 	return rd
 }
 
@@ -214,12 +207,12 @@ func (rn *RawNode) Advance(rd Ready) {
 	length := len(rd.Entries)
 	if length > 0 {
 		rn.Raft.RaftLog.stabled = max(rn.Raft.RaftLog.stabled, rd.Entries[length-1].Index)
-		log.Debugf("rawnode[%d] Term:%d advance stable index to:%d", rn.Raft.id, rn.Raft.Term, rn.Raft.RaftLog.stabled)
+		//log.Debugf("rawnode[%d] Term:%d advance stable index to:%d", rn.Raft.id, rn.Raft.Term, rn.Raft.RaftLog.stabled)
 	}
 	length = len(rd.CommittedEntries)
 	if length > 0 {
 		rn.Raft.RaftLog.applied = max(rn.Raft.RaftLog.applied, rd.CommittedEntries[length-1].Index)
-		log.Debugf("rawnode[%d] Term:%d raw node advance commit index to:%d",  rn.Raft.id, rn.Raft.Term, rn.Raft.RaftLog.applied)
+		//log.Debugf("rawnode[%d] Term:%d raw node advance commit index to:%d",  rn.Raft.id, rn.Raft.Term, rn.Raft.RaftLog.applied)
 	}
 
 	// TODO(wendongbo): optimize struct copy
@@ -227,6 +220,7 @@ func (rn *RawNode) Advance(rd Ready) {
 		rn.lastReady.HardState = rd.HardState
 	}
 
+	// TODO(wendongbo): opt, can we just erase all message?
 	lastEntIdx := len(rd.Messages) - 1
 	if lastEntIdx >= 0  {
 		if reflect.DeepEqual(rn.Raft.msgs[0], rd.Messages[0]) {
@@ -234,12 +228,10 @@ func (rn *RawNode) Advance(rd Ready) {
 			rn.Raft.msgs = rn.Raft.msgs[lastEntIdx + 1:]
 			len2 := len(rn.Raft.msgs)
 			log.Infof("p[%d] term:%d Advance remove msg from raft msgs %v, size:%d->%d", rn.Raft.id, rn.Raft.Term, rd.Messages, len1, len2)
-
 		}else {
 			log.Infof("p[%d] term:%d Advance failed\n", rn.Raft.id, rn.Raft.Term)
 		}
 	}
-
 }
 
 // GetProgress return the Progress of this node and its peers, if this

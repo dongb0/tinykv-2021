@@ -3,6 +3,7 @@ package meta
 import (
 	"github.com/Connor1996/badger"
 	"github.com/pingcap-incubator/tinykv/kv/util/engine_util"
+	"github.com/pingcap-incubator/tinykv/log"
 	"github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 	"github.com/pingcap-incubator/tinykv/proto/pkg/metapb"
 	rspb "github.com/pingcap-incubator/tinykv/proto/pkg/raft_serverpb"
@@ -49,10 +50,12 @@ const (
 
 func InitRaftLocalState(raftEngine *badger.DB, region *metapb.Region) (*rspb.RaftLocalState, error) {
 	raftState, err := GetRaftLocalState(raftEngine, region.Id)
+	log.Debugf("InitRaftLocalState get local state(%v):%v", RaftStateKey(region.Id), raftState)
 	if err != nil && err != badger.ErrKeyNotFound {
 		return nil, err
 	}
 	if err == badger.ErrKeyNotFound {
+		log.Debugf("InitRaftLocalState engine not contains hardstate, bootstrap from init state")
 		raftState = new(rspb.RaftLocalState)
 		raftState.HardState = new(eraftpb.HardState)
 		if len(region.Peers) > 0 {

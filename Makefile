@@ -79,18 +79,30 @@ project2b1:
 project2b2:
 	$(GOTEST) ./kv/test_raftstore -run ^TestOnePartition2B$
 
-project2b:
+project2b3:
+	$(GOTEST) ./kv/test_raftstore -run ^TestPersistPartition2B$
+
+project2b_partial:
 	$(GOTEST) ./kv/test_raftstore -run ^TestBasic2B$ || true
-	$(GOTEST) ./kv/test_raftstore -run ^TestConcurrent2B$ || true
 	$(GOTEST) ./kv/test_raftstore -run ^TestUnreliable2B$ || true
 	$(GOTEST) ./kv/test_raftstore -run ^TestOnePartition2B$ || true
 	$(GOTEST) ./kv/test_raftstore -run ^TestManyPartitionsOneClient2B$ || true
-	$(GOTEST) ./kv/test_raftstore -run ^TestManyPartitionsManyClients2B$ || true
 	$(GOTEST) ./kv/test_raftstore -run ^TestPersistOneClient2B$ || true
+
+project2b:
+	$(GOTEST) ./kv/test_raftstore -run ^TestBasic2B$ || true
+	$(GOTEST) ./kv/test_raftstore -run ^TestUnreliable2B$ || true
+	$(GOTEST) ./kv/test_raftstore -run ^TestOnePartition2B$ || true
+	$(GOTEST) ./kv/test_raftstore -run ^TestManyPartitionsOneClient2B$ || true
+	$(GOTEST) ./kv/test_raftstore -run ^TestPersistOneClient2B$ || true
+	$(GOTEST) ./kv/test_raftstore -run ^TestPersistPartition2B$ || true
+
+	$(GOTEST) ./kv/test_raftstore -run ^TestPersistPartitionUnreliable2B$ || true
+	$(GOTEST) ./kv/test_raftstore -run ^TestManyPartitionsManyClients2B$ || true
+
+	$(GOTEST) ./kv/test_raftstore -run ^TestConcurrent2B$ || true
 	$(GOTEST) ./kv/test_raftstore -run ^TestPersistConcurrent2B$ || true
 	$(GOTEST) ./kv/test_raftstore -run ^TestPersistConcurrentUnreliable2B$ || true
-	$(GOTEST) ./kv/test_raftstore -run ^TestPersistPartition2B$ || true
-	$(GOTEST) ./kv/test_raftstore -run ^TestPersistPartitionUnreliable2B$ || true
 
 project2c:
 	$(GOTEST) ./raft ./kv/test_raftstore -run 2C

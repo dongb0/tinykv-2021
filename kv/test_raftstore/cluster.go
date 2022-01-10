@@ -233,14 +233,14 @@ func (c *Cluster) CallCommandOnLeader(request *raft_cmdpb.RaftCmdRequest, timeou
 				log.Debugf("leader info maybe wrong, use random leader %d of region %d", leader.GetId(), regionID)
 			} else {
 				leader = newLeader
-				log.Debugf("use new leader %d of region %d", leader.GetId(), regionID)
+				log.Debugf("use new leader %d of region %d, request:%v", leader.GetId(), regionID, request)
 			}
 			continue
 		}
 		if resp.Header.Error != nil {
 			err := resp.Header.Error
 			if err.GetStaleCommand() != nil || err.GetEpochNotMatch() != nil || err.GetNotLeader() != nil {
-				log.Debugf("encouter retryable err %+v", resp)
+				log.Debugf("encounter retryable err %+v", resp)
 				if err.GetNotLeader() != nil && err.GetNotLeader().Leader != nil {
 					leader = err.GetNotLeader().Leader
 				} else {
@@ -249,7 +249,7 @@ func (c *Cluster) CallCommandOnLeader(request *raft_cmdpb.RaftCmdRequest, timeou
 				continue
 			}
 		}
-		log.Debugf("CallOnLeaderCommand return resp:%v, txn:%v", resp, txn)
+		log.Debugf("call command %s on leader %d of region %d complete", request.String(), leader.GetId(), regionID)
 		return resp, txn
 	}
 }
@@ -309,7 +309,7 @@ func (c *Cluster) MustPutCF(cf string, key, value []byte) {
 		log.Panicf("len(resp.Responses) != 1, get:%d", len(resp.Responses))
 	}
 	if resp.Responses[0].CmdType != raft_cmdpb.CmdType_Put {
-		panic("resp.Responses[0].CmdType != raft_cmdpb.CmdType_Put")
+		log.Panicf("resp.Responses[0].CmdType != raft_cmdpb.CmdType_Put, type:%d", resp.Responses[0].CmdType)
 	}
 }
 
@@ -376,6 +376,7 @@ func (c *Cluster) Scan(start, end []byte) [][]byte {
 		iter := raft_storage.NewRegionReader(txn, *region).IterCF(engine_util.CfDefault)
 		for iter.Seek(key); iter.Valid(); iter.Next() {
 			if engine_util.ExceedEndKey(iter.Item().Key(), end) {
+				log.Debugf("scan exceed end key:%s, cur:%s", end, iter.Item().Key())
 				break
 			}
 			value, err := iter.Item().ValueCopy(nil)
