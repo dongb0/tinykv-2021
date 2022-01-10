@@ -41,6 +41,7 @@ func newPeerMsgHandler(peer *peer, ctx *GlobalContext) *peerMsgHandler {
 	}
 }
 
+// TODO(wendongbo): can we find more efficiently since proposals are monotonic
 func findProposalIndex(index, term uint64 , arr []*proposal) int {
 	for i, a := range arr {
 		if index == a.index && term == a.term {
@@ -128,9 +129,9 @@ func (d *peerMsgHandler) HandleRaftReady() {
 			switch req.CmdType {
 			case raft_cmdpb.CmdType_Put:
 				// DEBUG
-				log.Debugf("peer[%d] term:%d proposal[idx:%d,term:%d] val:%s done, local state:%v", d.PeerId(), d.Term(), ent.Index, ent.Term, req.Put.Value, d.peerStorage.raftState)
-				cf := req.Put.Cf
-				DebugGetDBValue(d.peerStorage.Engines.Kv, engine_util.KeyWithCF(cf, req.Put.Key))
+				//log.Debugf("peer[%d] term:%d proposal[idx:%d,term:%d] val:%s done, local state:%v", d.PeerId(), d.Term(), ent.Index, ent.Term, req.Put.Value, d.peerStorage.raftState)
+				//cf := req.Put.Cf
+				//DebugGetDBValue(d.peerStorage.Engines.Kv, engine_util.KeyWithCF(cf, req.Put.Key))
 				// DEBUG
 			case raft_cmdpb.CmdType_Delete:
 
@@ -220,6 +221,7 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 		case raft_cmdpb.CmdType_Invalid:
 			// ignore
 		case raft_cmdpb.CmdType_Get:	// GET response return value
+			// TODO(wendongbo): immediately return snap request may cuase problem, what about Get?
 			var key, val []byte
 			err := d.ctx.engine.Kv.View(func(txn *badger.Txn) error {
 				key = engine_util.KeyWithCF(req.Get.Cf, req.Get.Key)
@@ -227,8 +229,7 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 				if err != nil {
 					return err
 				}
-				val, err = item.Value()
-				if err != nil {
+				if val, err = item.Value(); err != nil {
 					return nil
 				}
 				return nil
@@ -260,31 +261,11 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 			if err := d.RaftGroup.Propose(data); err != nil {
 				log.Errorf("proposeRaftCmd err: %s", err.Error())
 			}
-
-		//case raft_cmdpb.CmdType_Snap:
-		//	// TODO(wendongbo): currently we found out that, at least we need to wait for current leader commit first entry(commit entry from previous term)
-		//	// Has other situation?
-		//	// If client request entry at this term, can we return immediately?
-		//	// yes, because pending put cmd will not be seem at client
-		//	// Only leader can response(so maybe we cannot response here?)
-		//	// TODO(wendongbo): any opt?
-		//
-		//	res := &raft_cmdpb.Response{
-		//		CmdType: raft_cmdpb.CmdType_Snap,
-		//		Snap: &raft_cmdpb.SnapResponse{Region: d.Region()},
-		//	}
-		//	resp := newCmdResp()
-		//	resp.Responses = []*raft_cmdpb.Response{res}
-		//	waitCount := 0
-		//	for ; waitCount < 10 && !d.commitOldTermEntry(); waitCount++{
-		//		time.Sleep(20 * time.Millisecond)
-		//	}
-		//	cb.Txn = d.peerStorage.Engines.Kv.NewTransaction(false)
-		//	cb.Done(resp)
 		}
 	}
 }
 
+// waits for new leader commit no-op entry(unused now)
 func (d *peerMsgHandler) commitOldTermEntry() bool {
 	lastIndex := d.RaftGroup.Raft.RaftLog.LastIndex()
 	term, err := d.RaftGroup.Raft.RaftLog.Term(lastIndex)
