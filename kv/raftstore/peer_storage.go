@@ -310,25 +310,8 @@ func ClearMeta(engines *engine_util.Engines, kvWB, raftWB *engine_util.WriteBatc
 // never be committed
 func (ps *PeerStorage) Append(entries []eraftpb.Entry, raftWB *engine_util.WriteBatch) error {
 	// Your Code Here (2B).
-	log.Warnf("[Implement Me]peer store append entry:%v, write batch:%v", entries, *raftWB)
-	// TODO(wendongbo): append entries here (and compare with read function)
+	// TODO(wendongbo): append entries here
 	err := ps.Engines.Raft.Update(func(txn *badger.Txn) error {
-		//for _, ent := range entries {
-			//key := []byte{1, 2}
-			//id := ps.region.Id
-			//for ; id > 0; id = id >> 8 {
-			//	key = append(key, byte(id))
-			//}
-			//key = append(key, 1)
-			//idx := ent.Index
-			//for ; idx > 0; idx = idx >> 8 {
-			//	key = append(key, byte(idx))
-			//}
-			//val := ent.Data
-			//if err := txn.Set(key, val); err != nil {
-			//	return err
-			//}
-		//}
 		return nil
 	})
 	if err != nil {
@@ -363,11 +346,10 @@ func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, erro
 		Region: ps.Region(),
 		PrevRegion: ps.Region(),
 	}
-	// save raft log and raft state
+	// save raft log
 	wb := &engine_util.WriteBatch{}
 	log.Debugf("peerStorage SaveReadyState Entries(len:%d):%v" , len(ready.Entries), ready.Entries)
 	for _, ent := range ready.Entries {
-		// TODO(wendongbo): update logic
 		k := meta.RaftLogKey(ps.region.Id, ent.Index)
 		dt, _ := ent.Marshal()
 		log.Debugf("write {key:%v, val:%v} into raft engine", k, dt)
@@ -375,29 +357,28 @@ func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, erro
 		if err != nil {
 			log.Errorf("%s", err.Error())
 		}
-
 	}
 
+	// update raft state
+	ps.raftState.LastTerm = ready.Term
+	if len(ready.Entries) > 0 && ready.Entries[len(ready.Entries) - 1].Index > ps.raftState.LastIndex{
+		ps.raftState.LastIndex = ready.Entries[len(ready.Entries) - 1].Index
+	}
 	if ready.Term != 0 || ready.Commit != 0 {
-		k2 := meta.RaftStateKey(ps.region.Id)
 		// TODO(wendongbo): performance degradation if we point to inner struct directly?
 		//ps.raftState.HardState.Term = ready.Term
 		//ps.raftState.HardState.Commit = ready.Commit
 		//ps.raftState.HardState.Vote = ready.Vote
 		ps.raftState.HardState = &ready.HardState
-		ps.raftState.LastTerm = ready.Term
-		if len(ready.Entries) > 0 {
-			ps.raftState.LastIndex = ready.Entries[len(ready.Entries) - 1].Index
-		}
 
-		if err := wb.SetMeta(meta.RaftStateKey(ps.region.Id), ps.raftState); err != nil {
-			log.Errorf("%s", err.Error())
-		}
-		wb.MustWriteToDB(ps.Engines.Raft)
-		log.Debugf("write raftLocalState:{k:%v,v:%v}", k2, ps.raftState.String())
 	}
+	// TODO(wendongbo): can be opt if no update
+	if err := wb.SetMeta(meta.RaftStateKey(ps.region.Id), ps.raftState); err != nil {
+		log.Errorf("%s", err.Error())
+	}
+	log.Debugf("write raftLocalState:{k:%v,v:%v}", meta.RaftStateKey(ps.region.Id), ps.raftState.String())
 
-	// TODO: save apply state and region state
+	wb.MustWriteToDB(ps.Engines.Raft)
 	wb.Reset()
 
 	log.Debugf("peerStorage SaveReadyState CommittedEntries(%d):%v" , ready.CommittedEntries, ready.CommittedEntries)

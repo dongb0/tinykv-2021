@@ -64,8 +64,9 @@ func newLog(storage Storage) *RaftLog {
 	firstIndex, _ := storage.FirstIndex()
 	entries, err := storage.Entries(firstIndex, lastIndex + 1)
 	if err != nil {
-		log.Warnf("fetch entry error: %s", err.Error())
+		log.Warnf("fetch entry err: %s, firstIndex:%d, lastIndex:%d", err.Error(), firstIndex, lastIndex)
 	}
+	log.Debugf("building new log entry from storage(len:%d), lastIndex:%d", len(entries), lastIndex)
 	hardState, _, _ := storage.InitialState()
 	log := &RaftLog{
 		storage: storage,

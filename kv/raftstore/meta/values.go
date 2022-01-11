@@ -50,7 +50,7 @@ const (
 
 func InitRaftLocalState(raftEngine *badger.DB, region *metapb.Region) (*rspb.RaftLocalState, error) {
 	raftState, err := GetRaftLocalState(raftEngine, region.Id)
-	log.Debugf("InitRaftLocalState get local state(%v):%v", RaftStateKey(region.Id), raftState)
+	log.Debugf("InitRaftLocalState get local state:%v", raftState)
 	if err != nil && err != badger.ErrKeyNotFound {
 		return nil, err
 	}
