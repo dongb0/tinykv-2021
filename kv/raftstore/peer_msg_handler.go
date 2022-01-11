@@ -221,7 +221,9 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 		case raft_cmdpb.CmdType_Invalid:
 			// ignore
 		case raft_cmdpb.CmdType_Get:	// GET response return value
-			// TODO(wendongbo): immediately return snap request may cuase problem, what about Get?
+			// TODO(wendongbo): immediately return snap request may cause problem, what about Get?
+			// leader can ensure apply always catch up with commit index?
+			// Yes, leader will apply before sending response to client
 			var key, val []byte
 			err := d.ctx.engine.Kv.View(func(txn *badger.Txn) error {
 				key = engine_util.KeyWithCF(req.Get.Cf, req.Get.Key)
