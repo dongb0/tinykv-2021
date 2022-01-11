@@ -260,27 +260,6 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 			if err := d.RaftGroup.Propose(data); err != nil {
 				log.Errorf("proposeRaftCmd err: %s", err.Error())
 			}
-
-		//case raft_cmdpb.CmdType_Snap:
-		//	// TODO(wendongbo): currently we found out that, at least we need to wait for current leader commit first entry(commit entry from previous term)
-		//	// Has other situation?
-		//	// If client request entry at this term, can we return immediately?
-		//	// yes, because pending put cmd will not be seem at client
-		//	// Only leader can response(so maybe we cannot response here?)
-		//	// TODO(wendongbo): any opt?
-		//
-		//	res := &raft_cmdpb.Response{
-		//		CmdType: raft_cmdpb.CmdType_Snap,
-		//		Snap: &raft_cmdpb.SnapResponse{Region: d.Region()},
-		//	}
-		//	resp := newCmdResp()
-		//	resp.Responses = []*raft_cmdpb.Response{res}
-		//	waitCount := 0
-		//	for ; waitCount < 10 && !d.commitOldTermEntry(); waitCount++{
-		//		time.Sleep(20 * time.Millisecond)
-		//	}
-		//	cb.Txn = d.peerStorage.Engines.Kv.NewTransaction(false)
-		//	cb.Done(resp)
 		}
 	}
 }
