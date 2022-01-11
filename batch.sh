@@ -9,7 +9,7 @@ echo Total run $num epoch
 
 for (( i=0; i<$num; i++ ))
 do
-  for (( j=1; j<=11; j++ ))
+  for (( j=7; j<=7; j++ ))
   do
     fileName=tmp-t${j}-r${i}.log
     echo "running test $j round $i"

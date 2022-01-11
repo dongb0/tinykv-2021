@@ -316,7 +316,7 @@ func (r *Raft) becomeLeader() {
 	r.State = StateLeader
 	r.RaftLog.entries = append(r.RaftLog.entries, pb.Entry{ Term: r.Term , Index: r.RaftLog.LastIndex() + 1 })
 	r.initPrs()
-	pclog.Infof("peer[%d] comes to power at term %d, with index(commit:%d, apply:%d):%d\n", r.id, r.Term, r.RaftLog.committed, r.RaftLog.applied, r.RaftLog.LastIndex())
+	pclog.Infof("peer[%d] comes to power at term %d, with index(commit:%d, apply:%d, len:%d):%d\n", r.id, r.Term, r.RaftLog.committed, r.RaftLog.applied, len(r.RaftLog.entries), r.RaftLog.LastIndex())
 	if len(r.RaftLog.entries) != 0 {
 		index := maxInt(r.RaftLog.getArrayIndex(r.RaftLog.LastIndex()), 0)
 		pclog.Debugf("last entries:%v", r.RaftLog.entries[index:])
@@ -568,6 +568,7 @@ func (r *Raft) handleVoteResponse(m pb.Message) {
 // handleSnapshot handle Snapshot RPC request
 func (r *Raft) handleSnapshot(m pb.Message) {
 	// Your Code Here (2C).
+	pclog.Warnf("handleSnapshot is not implemented")
 }
 
 // addNode add a new node to raft group

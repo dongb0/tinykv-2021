@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"github.com/Connor1996/badger"
 	"github.com/pingcap-incubator/tinykv/kv/util/engine_util"
-	"github.com/pingcap-incubator/tinykv/proto/pkg/errorpb"
 	"time"
 
 	"github.com/Connor1996/badger/y"
@@ -64,15 +63,6 @@ func deleteAt(index int, arr []*proposal) []*proposal {
 	return append(arr[:index], arr[index + 1:]...)
 }
 
-func findProposal(index, term uint64 , arr []*proposal) *proposal{
-	for _, a := range arr {
-		if index == a.index && term == a.term {
-			return a
-		}
-	}
-	return nil
-}
-
 func (d *peerMsgHandler) HandleRaftReady() {
 	if d.stopped {
 		return
@@ -109,16 +99,18 @@ func (d *peerMsgHandler) HandleRaftReady() {
 			resp := newCmdResp()
 			req := raft_cmdpb.Request{}
 
-			if d.LeaderId() != d.PeerId() {
-				resp.Header.Error = &errorpb.Error{
-					NotLeader: &errorpb.NotLeader{},
-				}
-				p.cb.Done(resp)
-				log.Debugf("peer[%d] term:%d is no longer leader(%d), should return nil response, cur:%v => lead", d.PeerId(), d.Term(), d.LeaderId(), d.Meta)
-				continue
-				// TODO(wendongbo): useless
-				// but what if peer becomes follower while processing msg? Is is possible?
-			}
+			//if d.LeaderId() != d.PeerId() {
+			//	resp.Header.Error = &errorpb.Error{
+			//		NotLeader: &errorpb.NotLeader{},
+			//	}
+			//	p.cb.Done(resp)
+			//	log.Debugf("peer[%d] term:%d is no longer leader(%d), should return nil response, cur:%v => lead", d.PeerId(), d.Term(), d.LeaderId(), d.Meta)
+			//	continue
+			//	// TODO(wendongbo): useless
+			//	// but what if peer becomes follower while processing msg? Is is possible?
+			//	// peer would not become follower during the process of apply entry
+			//	// only before or after this
+			//}
 
 			if err := req.Unmarshal(ent.Data); err != nil || req.CmdType == raft_cmdpb.CmdType_Invalid{
 				log.Errorf("unmarshal request err:[%s] or invalid request type", err.Error())
@@ -138,7 +130,7 @@ func (d *peerMsgHandler) HandleRaftReady() {
 			case raft_cmdpb.CmdType_Snap:
 				resp.Responses[0].Snap = &raft_cmdpb.SnapResponse{Region: d.Region()}
 			case raft_cmdpb.CmdType_Get:
-				// TODO(wendongbo):
+				// TODO
 			}
 			p.cb.Txn = d.peerStorage.Engines.Kv.NewTransaction(false)
 			p.cb.Done(resp)
@@ -214,6 +206,11 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 		cb.Done(ErrResp(err))
 		return
 	}
+	if msg.AdminRequest != nil {
+		log.Warnf("should have code to propose snapshot cmd:%v", *msg.AdminRequest)
+		return
+	}
+
 	// Your Code Here (2B).
 	log.Debugf("should have code to handle raft command(len:%d):%s", len(msg.Requests), msg.String())
 	for _, req := range msg.Requests {
@@ -224,6 +221,7 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 			// TODO(wendongbo): immediately return snap request may cause problem, what about Get?
 			// leader can ensure apply always catch up with commit index?
 			// Yes, leader will apply before sending response to client
+			// but will new leader timely apply?
 			var key, val []byte
 			err := d.ctx.engine.Kv.View(func(txn *badger.Txn) error {
 				key = engine_util.KeyWithCF(req.Get.Cf, req.Get.Key)
@@ -250,9 +248,9 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 			resp.Responses = []*raft_cmdpb.Response{res}
 			cb.Done(resp)
 
-		case raft_cmdpb.CmdType_Snap:
-			fallthrough
-		case raft_cmdpb.CmdType_Put, raft_cmdpb.CmdType_Delete:	// PUT/DELETE response no return val
+		case raft_cmdpb.CmdType_Put,
+			 raft_cmdpb.CmdType_Delete,
+			 raft_cmdpb.CmdType_Snap:	// PUT/DELETE response no return val
 			data, err := req.Marshal()
 			if err != nil {
 				log.Errorf("proposeRaftCmd err: %s", err.Error())
@@ -572,6 +570,7 @@ func (d *peerMsgHandler) onRaftGCLogTick() {
 
 	appliedIdx := d.peerStorage.AppliedIndex()
 	firstIdx, _ := d.peerStorage.FirstIndex()
+	log.Debugf("peer[%d] term:%d appliedIdx:%d, firstIdx:%d", d.PeerId(), d.Term(), appliedIdx, firstIdx)
 	var compactIdx uint64
 	if appliedIdx > firstIdx && appliedIdx-firstIdx >= d.ctx.cfg.RaftLogGcCountLimit {
 		compactIdx = appliedIdx

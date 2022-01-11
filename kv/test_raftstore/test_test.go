@@ -320,6 +320,7 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 				for _, engine := range cluster.engines {
 					state, err := meta.GetApplyState(engine.Kv, region.GetId())
 					if err == badger.ErrKeyNotFound {
+						log.Warnf("Apply state key not found")
 						continue
 					}
 					if err != nil {
@@ -330,6 +331,7 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 					if appliedIdx-truncatedIdx > 2*uint64(maxraftlog) {
 						t.Fatalf("logs were not trimmed (%v - %v > 2*%v)", appliedIdx, truncatedIdx, maxraftlog)
 					}
+					log.Debugf("log entries len:%d, applyIdx:%d, truncatedIdx:%d", appliedIdx-truncatedIdx, appliedIdx, truncatedIdx)
 				}
 
 				key = region.EndKey

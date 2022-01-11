@@ -112,6 +112,9 @@ project2b:
 project2c:
 	$(GOTEST) ./raft ./kv/test_raftstore -run 2C
 
+project2c1:
+	$(GOTEST) ./kv/test_raftstore -run ^TestSnapshotRecover2C$ || true
+
 project3: project3a project3b project3c
 
 project3a:
