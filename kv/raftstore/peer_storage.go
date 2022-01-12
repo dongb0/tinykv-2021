@@ -154,6 +154,7 @@ func (ps *PeerStorage) FirstIndex() (uint64, error) {
 }
 
 func (ps *PeerStorage) Snapshot() (eraftpb.Snapshot, error) {
+	log.Debugf("Snapshot generation begin")
 	var snapshot eraftpb.Snapshot
 	if ps.snapState.StateType == snap.SnapState_Generating {
 		select {
@@ -361,8 +362,8 @@ func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, erro
 
 	// update raft state
 	ps.raftState.LastTerm = ready.Term
-	if len(ready.Entries) > 0 && ready.Entries[len(ready.Entries) - 1].Index > ps.raftState.LastIndex{
-		ps.raftState.LastIndex = ready.Entries[len(ready.Entries) - 1].Index
+	if l := len(ready.Entries); l > 0 {
+		ps.raftState.LastIndex = util.MaxUint64(ps.raftState.LastIndex, ready.Entries[l - 1].Index)
 	}
 	if ready.Term != 0 || ready.Commit != 0 {
 		// TODO(wendongbo): performance degradation if we point to inner struct directly?
@@ -381,7 +382,7 @@ func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, erro
 	wb.MustWriteToDB(ps.Engines.Raft)
 	wb.Reset()
 
-	log.Debugf("peerStorage SaveReadyState CommittedEntries(%d):%v" , ready.CommittedEntries, ready.CommittedEntries)
+	log.Debugf("peerStorage SaveReadyState CommittedEntries(len:%d):%v" , len(ready.CommittedEntries), ready.CommittedEntries)
 	for _, ent := range ready.CommittedEntries {
 		req := raft_cmdpb.Request{}
 		err := req.Unmarshal(ent.Data)
@@ -399,6 +400,17 @@ func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, erro
 		default:
 			log.Warnf("SaveReadyState not implements apply op: %d, ent:%v", req.CmdType, ent)
 		}
+	}
+
+	if l := len(ready.CommittedEntries); l > 0 {
+		ps.applyState.AppliedIndex = util.MaxUint64(ps.applyState.AppliedIndex, ready.CommittedEntries[l-1].Index)
+	}
+
+	log.Debugf("peer storage truncatedIdx:%d", ps.truncatedIndex())
+
+
+	if err := wb.SetMeta(meta.ApplyStateKey(ps.region.Id), ps.applyState); err != nil {
+		log.Errorf("set apply state meta error:%s", err.Error())
 	}
 	wb.MustWriteToDB(ps.Engines.Kv)
 

@@ -205,3 +205,17 @@ func RegionEqual(l, r *metapb.Region) bool {
 	}
 	return l.Id == r.Id && l.RegionEpoch.Version == r.RegionEpoch.Version && l.RegionEpoch.ConfVer == r.RegionEpoch.ConfVer
 }
+
+func MaxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func MaxUint64(a, b uint64) uint64 {
+	if a > b {
+		return a
+	}
+	return b
+}

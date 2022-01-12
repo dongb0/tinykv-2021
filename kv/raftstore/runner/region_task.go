@@ -205,5 +205,6 @@ func doSnapshot(engines *engine_util.Engines, mgr *snap.SnapManager, regionId ui
 		return nil, err
 	}
 	snapshot.Data, err = snapshotData.Marshal()
+	log.Debugf("generate snapshot complete. [regionId: %d]", regionId)
 	return snapshot, err
 }

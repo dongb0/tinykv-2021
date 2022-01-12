@@ -39,7 +39,7 @@ func newPeerMsgHandler(peer *peer, ctx *GlobalContext) *peerMsgHandler {
 		ctx:  ctx,
 	}
 }
-
+const ProposalNotFound = -1
 // TODO(wendongbo): can we find more efficiently since proposals are monotonic
 func findProposalIndex(index, term uint64 , arr []*proposal) int {
 	for i, a := range arr {
@@ -89,29 +89,26 @@ func (d *peerMsgHandler) HandleRaftReady() {
 		// 2. construct response
 		// 3. Done
 		for _, ent := range rd.CommittedEntries {
+			// TODO(wendongbo): update code structure
+			// but this continue cannot be defer? why
 			index := findProposalIndex(ent.Index, ent.Term, d.proposals)
-			if index == -1 {
+			if index == ProposalNotFound {
 				continue
 			}
 			p := d.proposals[index]
 			d.proposals = deleteAt(index, d.proposals)
 
-			resp := newCmdResp()
-			req := raft_cmdpb.Request{}
+			// TODO(wendongbo): figure out data whether is Admin Request or not
+			// If is Admin, unmarshal and continue
 
-			//if d.LeaderId() != d.PeerId() {
-			//	resp.Header.Error = &errorpb.Error{
-			//		NotLeader: &errorpb.NotLeader{},
-			//	}
-			//	p.cb.Done(resp)
-			//	log.Debugf("peer[%d] term:%d is no longer leader(%d), should return nil response, cur:%v => lead", d.PeerId(), d.Term(), d.LeaderId(), d.Meta)
+			//adminReq := raft_cmdpb.AdminRequest{}
+			//if err := adminReq.Unmarshal(ent.Data); err != nil {
+			//	log.Debugf("peer[%d] term:%d commit admin request:%v", d.PeerId(), d.Term(), adminReq)
 			//	continue
-			//	// TODO(wendongbo): useless
-			//	// but what if peer becomes follower while processing msg? Is is possible?
-			//	// peer would not become follower during the process of apply entry
-			//	// only before or after this
 			//}
 
+			resp := newCmdResp()
+			req := raft_cmdpb.Request{}
 			if err := req.Unmarshal(ent.Data); err != nil || req.CmdType == raft_cmdpb.CmdType_Invalid{
 				log.Errorf("unmarshal request err:[%s] or invalid request type", err.Error())
 				continue
@@ -120,11 +117,9 @@ func (d *peerMsgHandler) HandleRaftReady() {
 			resp.Responses = []*raft_cmdpb.Response{{CmdType: req.CmdType}}
 			switch req.CmdType {
 			case raft_cmdpb.CmdType_Put:
-				// DEBUG
 				//log.Debugf("peer[%d] term:%d proposal[idx:%d,term:%d] val:%s done, local state:%v", d.PeerId(), d.Term(), ent.Index, ent.Term, req.Put.Value, d.peerStorage.raftState)
 				//cf := req.Put.Cf
 				//DebugGetDBValue(d.peerStorage.Engines.Kv, engine_util.KeyWithCF(cf, req.Put.Key))
-				// DEBUG
 			case raft_cmdpb.CmdType_Delete:
 
 			case raft_cmdpb.CmdType_Snap:
@@ -206,18 +201,45 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 		cb.Done(ErrResp(err))
 		return
 	}
+	// Your Code Here (2B).
 	if msg.AdminRequest != nil {
-		log.Warnf("should have code to propose snapshot cmd:%v", *msg.AdminRequest)
-		return
+		log.Warnf("should have code to handle snapshot cmd:%v", msg.AdminRequest.String())
+		switch msg.AdminRequest.CmdType {
+		case raft_cmdpb.AdminCmdType_InvalidAdmin:
+
+		case raft_cmdpb.AdminCmdType_CompactLog:
+			// TODO(wendongbo): I don't think it need to propose an snapshot msg
+			//data, err := msg.AdminRequest.Marshal()
+			//if err != nil {
+			//	log.Errorf("propose Admin Cmd err: %s", err.Error())
+			//}
+			//if err := d.RaftGroup.Propose(data); err != nil {
+			//	log.Errorf("propose Admin Cmd err: %s", err.Error())
+			//}
+
+			d.ScheduleCompactLog(msg.AdminRequest.CompactLog.CompactIndex)
+			truncatedState := d.peerStorage.applyState.TruncatedState
+			truncatedState.Term, err = d.peerStorage.Term(d.LastCompactedIdx)
+			if err != nil {
+				log.Debugf("peerMsgHandler get term at index:%d err:%s", d.LastCompactedIdx, err.Error())
+			}
+			truncatedState.Index = d.LastCompactedIdx
+
+			// Why peer has a lastCompactIdx? duplicate with peer storage?
+			log.Debugf("after compact truncatedIdx:%d, truncatedState:%v", d.LastCompactedIdx, truncatedState)
+
+		default:
+			log.Debugf("not supported admin cmd type")
+		}
 	}
 
-	// Your Code Here (2B).
 	log.Debugf("should have code to handle raft command(len:%d):%s", len(msg.Requests), msg.String())
 	for _, req := range msg.Requests {
 		switch req.CmdType {
 		case raft_cmdpb.CmdType_Invalid:
 			// ignore
-		case raft_cmdpb.CmdType_Get:	// GET response return value
+		case raft_cmdpb.CmdType_Get:
+			// GET response return value
 			// TODO(wendongbo): immediately return snap request may cause problem, what about Get?
 			// leader can ensure apply always catch up with commit index?
 			// Yes, leader will apply before sending response to client

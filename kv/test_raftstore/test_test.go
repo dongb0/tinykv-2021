@@ -488,7 +488,7 @@ func TestOneSnapshot2C(t *testing.T) {
 	)
 
 	// write some data to trigger snapshot
-	for i := 100; i < 115; i++ {
+	for i := 100; i < 120; i++ {
 		cluster.MustPutCF(cf, []byte(fmt.Sprintf("k%d", i)), []byte(fmt.Sprintf("v%d", i)))
 	}
 	cluster.MustDeleteCF(cf, []byte("k2"))
@@ -515,6 +515,7 @@ func TestOneSnapshot2C(t *testing.T) {
 		if appliedIdx-truncatedIdx > 2*uint64(cfg.RaftLogGcCountLimit) {
 			t.Fatalf("logs were not trimmed (%v - %v > 2*%v)", appliedIdx, truncatedIdx, cfg.RaftLogGcCountLimit)
 		}
+		log.Debugf("log entries len:%d, applyIdx:%d, truncatedIdx:%d", appliedIdx-truncatedIdx, appliedIdx, truncatedIdx)
 	}
 }
 

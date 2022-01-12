@@ -346,6 +346,8 @@ func (r *Raft) Step(m pb.Message) error {
 			goto HeartBeat
 		case pb.MessageType_MsgAppend:
 			goto Append
+		case pb.MessageType_MsgSnapshot:
+			goto Snapshot
 		}
 	case StateCandidate:
 		switch m.MsgType {
@@ -363,6 +365,8 @@ func (r *Raft) Step(m pb.Message) error {
 				r.becomeFollower(m.Term, None)
 			}
 			goto Append
+		case pb.MessageType_MsgSnapshot:
+			goto Snapshot
 		}
 	case StateLeader:
 		switch m.MsgType {
@@ -385,8 +389,8 @@ func (r *Raft) Step(m pb.Message) error {
 		case pb.MessageType_MsgBeat:
 			r.broadcastHeartbeat()
 		case pb.MessageType_MsgHeartbeat:
-			// normally leader do not send heart beat to itself,
-			// but split leader may do this after split recover
+			// leader will not send heart beat to itself,
+			// but split leader and new leader may send heart beat to each other after split recover
 			goto HeartBeat
 		case pb.MessageType_MsgHeartbeatResponse:
 			lastIndex := r.RaftLog.LastIndex()
@@ -419,6 +423,8 @@ func (r *Raft) Step(m pb.Message) error {
 				}
 				pclog.Debugf("leader[%d] knows peer[%d] accept up to [%d], up to date:%t", r.id, m.From, r.Prs[m.From].Match, uptodate)
 			}
+		case pb.MessageType_MsgSnapshot:
+			goto Snapshot
 		}
 	}
 	return nil
@@ -436,6 +442,9 @@ Election:
 		r.becomeLeader()
 		r.updateCommit(r.RaftLog.LastIndex())
 	}
+	return nil
+Snapshot:
+
 	return nil
 }
 
