@@ -354,9 +354,8 @@ func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, erro
 		k := meta.RaftLogKey(ps.region.Id, ent.Index)
 		dt, _ := ent.Marshal()
 		log.Debugf("write {key:%v, val:%v} into raft engine", k, dt)
-		err := wb.SetMeta(k, &ent)
-		if err != nil {
-			log.Errorf("%s", err.Error())
+		if err := wb.SetMeta(k, &ent); err != nil {
+			log.Errorf("write {key:%v, val:%v} into raft engine err:%v", k, dt, err.Error())
 		}
 	}
 
@@ -367,9 +366,6 @@ func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, erro
 	}
 	if ready.Term != 0 || ready.Commit != 0 {
 		// TODO(wendongbo): performance degradation if we point to inner struct directly?
-		//ps.raftState.HardState.Term = ready.Term
-		//ps.raftState.HardState.Commit = ready.Commit
-		//ps.raftState.HardState.Vote = ready.Vote
 		ps.raftState.HardState = &ready.HardState
 
 	}
@@ -384,21 +380,26 @@ func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, erro
 
 	log.Debugf("peerStorage SaveReadyState CommittedEntries(len:%d):%v" , len(ready.CommittedEntries), ready.CommittedEntries)
 	for _, ent := range ready.CommittedEntries {
-		req := raft_cmdpb.Request{}
-		err := req.Unmarshal(ent.Data)
-		if err != nil {
-			log.Errorf("%s", err)
+		msg := raft_cmdpb.RaftCmdRequest{}
+		if err := msg.Unmarshal(ent.Data); err != nil {
+			log.Errorf("peer storage unmarshal Committed Entries err:%v", err.Error())
 		}
-		switch req.CmdType {
-		case raft_cmdpb.CmdType_Put:
-			cf := req.Put.Cf
-			wb.SetCF(cf, req.Put.Key, req.Put.Value)
-			log.Debugf("committedEntries set put.key:%v, put.val:%v", string(engine_util.KeyWithCF(cf, req.Put.Key)), string(req.Put.Value))
-		case raft_cmdpb.CmdType_Delete:
-			cf := req.Delete.Cf
-			wb.DeleteCF(cf, req.Delete.Key)
-		default:
-			log.Warnf("SaveReadyState not implements apply op: %d, ent:%v", req.CmdType, ent)
+
+		// handle admin requests
+		if msg.AdminRequest != nil {
+
+		}
+
+		// handle normal requests
+		for _, req := range msg.Requests {
+			switch req.CmdType {
+			case raft_cmdpb.CmdType_Put:
+				wb.SetCF(req.Put.Cf, req.Put.Key, req.Put.Value)
+			case raft_cmdpb.CmdType_Delete:
+				wb.DeleteCF(req.Delete.Cf, req.Delete.Key)
+			default:
+				log.Warnf("SaveReadyState unexpected operation: %d, ent:%v", req.CmdType, req)
+			}
 		}
 	}
 
@@ -407,7 +408,6 @@ func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, erro
 	}
 
 	log.Debugf("peer storage truncatedIdx:%d", ps.truncatedIndex())
-
 
 	if err := wb.SetMeta(meta.ApplyStateKey(ps.region.Id), ps.applyState); err != nil {
 		log.Errorf("set apply state meta error:%s", err.Error())

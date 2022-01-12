@@ -2,7 +2,6 @@ package raftstore
 
 import (
 	"fmt"
-	"github.com/Connor1996/badger"
 	"github.com/pingcap-incubator/tinykv/kv/util/engine_util"
 	"time"
 
@@ -68,68 +67,63 @@ func (d *peerMsgHandler) HandleRaftReady() {
 		return
 	}
 	// Your Code Here (2B).
-	if d.RaftGroup.HasReady() {
-		rd := d.RaftGroup.Ready()
-		log.Debugf("peer[%d] term:%d HandleRaftReady handling ready entry:%v, committed:%v", d.PeerId(), d.RaftGroup.Raft.Term, rd.Entries, rd.CommittedEntries)
+	if !d.RaftGroup.HasReady() {
+		return
+	}
+	rd := d.RaftGroup.Ready()
+	log.Debugf("peer[%d] term:%d HandleRaftReady handling ready entry:%v, committed:%v", d.PeerId(), d.RaftGroup.Raft.Term, rd.Entries, rd.CommittedEntries)
 
-		if !d.IsLeader() {
-			log.Debugf("follower[%d]T:%d applying to state machine", d.PeerId(), d.Term())
+	_, err := d.peerStorage.SaveReadyState(&rd) // TODO(wendongbo): not fully implemented
+	if err != nil {
+		log.Errorf("apply raft ready err:%v", err)
+	}
+	d.Send(d.ctx.trans, rd.Messages)
+	d.RaftGroup.Advance(rd)
+
+	for _, ent := range rd.CommittedEntries {
+		index := findProposalIndex(ent.Index, ent.Term, d.proposals)
+		if index == ProposalNotFound {
+			log.Warnf("proposal idx:%d term:%d not found", ent.Index, ent.Term)
+			continue
 		}
-
-		_, err := d.peerStorage.SaveReadyState(&rd) // TODO(wendongbo): not fully implemented
-		if err != nil {
-			log.Errorf("apply raft ready err:%v", err)
+		doneProposal := d.proposals[index]
+		d.proposals = deleteAt(index, d.proposals)
+		msg := raft_cmdpb.RaftCmdRequest{}
+		if err = msg.Unmarshal(ent.Data); err != nil {
+			log.Errorf("unmarshal msg err:%v", err.Error())
 		}
-		d.Send(d.ctx.trans, rd.Messages)
-		d.RaftGroup.Advance(rd)
-
-		// response to client when majority write operation response
-		// 0. only leader can use propose to response
-		// 1. find corresponding proposal
-		// 2. construct response
-		// 3. Done
-		for _, ent := range rd.CommittedEntries {
-			// TODO(wendongbo): update code structure
-			// but this continue cannot be defer? why
-			index := findProposalIndex(ent.Index, ent.Term, d.proposals)
-			if index == ProposalNotFound {
-				continue
-			}
-			p := d.proposals[index]
-			d.proposals = deleteAt(index, d.proposals)
-
-			// TODO(wendongbo): figure out data whether is Admin Request or not
-			// If is Admin, unmarshal and continue
-
-			//adminReq := raft_cmdpb.AdminRequest{}
-			//if err := adminReq.Unmarshal(ent.Data); err != nil {
-			//	log.Debugf("peer[%d] term:%d commit admin request:%v", d.PeerId(), d.Term(), adminReq)
-			//	continue
-			//}
-
-			resp := newCmdResp()
-			req := raft_cmdpb.Request{}
-			if err := req.Unmarshal(ent.Data); err != nil || req.CmdType == raft_cmdpb.CmdType_Invalid{
-				log.Errorf("unmarshal request err:[%s] or invalid request type", err.Error())
-				continue
-			}
-			log.Debugf("unmarshal request:%v", req)
-			resp.Responses = []*raft_cmdpb.Response{{CmdType: req.CmdType}}
+		if msg.AdminRequest != nil {
+			log.Warnf("handling AdminRequest")
+			// TODO(wendongbo)
+		}
+		log.Debugf("handling Normal Request")
+		response := newCmdResp()
+		for _, req := range msg.Requests {
+			// TODO(wendongbo): check whether all request are of the same CmdType
+			response.Responses = append(response.Responses, &raft_cmdpb.Response{
+				CmdType: req.CmdType,
+			})
+			back := len(response.Responses) - 1
 			switch req.CmdType {
 			case raft_cmdpb.CmdType_Put:
-				//log.Debugf("peer[%d] term:%d proposal[idx:%d,term:%d] val:%s done, local state:%v", d.PeerId(), d.Term(), ent.Index, ent.Term, req.Put.Value, d.peerStorage.raftState)
-				//cf := req.Put.Cf
-				//DebugGetDBValue(d.peerStorage.Engines.Kv, engine_util.KeyWithCF(cf, req.Put.Key))
+
 			case raft_cmdpb.CmdType_Delete:
 
 			case raft_cmdpb.CmdType_Snap:
-				resp.Responses[0].Snap = &raft_cmdpb.SnapResponse{Region: d.Region()}
+				doneProposal.cb.Txn = d.peerStorage.Engines.Kv.NewTransaction(false)
+				response.Responses[back].Snap = &raft_cmdpb.SnapResponse{Region: d.Region()}
 			case raft_cmdpb.CmdType_Get:
-				// TODO
+				var val []byte
+				if val, err = engine_util.GetCF(d.peerStorage.Engines.Kv, req.Get.Cf, req.Get.Key); err != nil {
+					log.Errorf("Get cmd fetch data err:%v with key:%v", err.Error(), req.Get.Key)
+				}
+				response.Responses[back].Get = &raft_cmdpb.GetResponse{Value: val}
+			default:
+				log.Warnf("do not support request cmd type:%d", req.CmdType)
 			}
-			p.cb.Txn = d.peerStorage.Engines.Kv.NewTransaction(false)
-			p.cb.Done(resp)
 		}
+		doneProposal.cb.Done(response)
+		log.Debugf("peer[%d] term:%d proposal idx:%d term:%d done", d.PeerId(), d.Term(), ent.Index, ent.Term)
 	}
 }
 
@@ -202,88 +196,14 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 		return
 	}
 	// Your Code Here (2B).
-	if msg.AdminRequest != nil {
-		log.Warnf("should have code to handle snapshot cmd:%v", msg.AdminRequest.String())
-		switch msg.AdminRequest.CmdType {
-		case raft_cmdpb.AdminCmdType_InvalidAdmin:
-
-		case raft_cmdpb.AdminCmdType_CompactLog:
-			// TODO(wendongbo): I don't think it need to propose an snapshot msg
-			//data, err := msg.AdminRequest.Marshal()
-			//if err != nil {
-			//	log.Errorf("propose Admin Cmd err: %s", err.Error())
-			//}
-			//if err := d.RaftGroup.Propose(data); err != nil {
-			//	log.Errorf("propose Admin Cmd err: %s", err.Error())
-			//}
-
-			d.ScheduleCompactLog(msg.AdminRequest.CompactLog.CompactIndex)
-			truncatedState := d.peerStorage.applyState.TruncatedState
-			truncatedState.Term, err = d.peerStorage.Term(d.LastCompactedIdx)
-			if err != nil {
-				log.Debugf("peerMsgHandler get term at index:%d err:%s", d.LastCompactedIdx, err.Error())
-			}
-			truncatedState.Index = d.LastCompactedIdx
-
-			// Why peer has a lastCompactIdx? duplicate with peer storage?
-			log.Debugf("after compact truncatedIdx:%d, truncatedState:%v", d.LastCompactedIdx, truncatedState)
-
-		default:
-			log.Debugf("not supported admin cmd type")
-		}
+	var data []byte
+	if data, err = msg.Marshal(); err != nil {
+		log.Errorf("marshal RaftCmdRequest err:%v", err.Error())
 	}
-
-	log.Debugf("should have code to handle raft command(len:%d):%s", len(msg.Requests), msg.String())
-	for _, req := range msg.Requests {
-		switch req.CmdType {
-		case raft_cmdpb.CmdType_Invalid:
-			// ignore
-		case raft_cmdpb.CmdType_Get:
-			// GET response return value
-			// TODO(wendongbo): immediately return snap request may cause problem, what about Get?
-			// leader can ensure apply always catch up with commit index?
-			// Yes, leader will apply before sending response to client
-			// but will new leader timely apply?
-			var key, val []byte
-			err := d.ctx.engine.Kv.View(func(txn *badger.Txn) error {
-				key = engine_util.KeyWithCF(req.Get.Cf, req.Get.Key)
-				item, err := txn.Get(key)
-				if err != nil {
-					return err
-				}
-				if val, err = item.Value(); err != nil {
-					return nil
-				}
-				return nil
-			})
-			if err != nil {
-				log.Errorf("CmdType_Get get value err:%v, using key:%s", err, key)
-			}
-
-			res := &raft_cmdpb.Response{
-				CmdType: raft_cmdpb.CmdType_Get,
-				Get: &raft_cmdpb.GetResponse{
-					Value: val,
-				},
-			}
-			resp := newCmdResp()
-			resp.Responses = []*raft_cmdpb.Response{res}
-			cb.Done(resp)
-
-		case raft_cmdpb.CmdType_Put,
-			 raft_cmdpb.CmdType_Delete,
-			 raft_cmdpb.CmdType_Snap:	// PUT/DELETE response no return val
-			data, err := req.Marshal()
-			if err != nil {
-				log.Errorf("proposeRaftCmd err: %s", err.Error())
-			}
-			index := d.RaftGroup.Raft.RaftLog.LastIndex() + 1
-			d.proposals = append(d.proposals, &proposal{term: d.Term(), index: index, cb: cb})
-			log.Debugf("peer[%d]term:%d add proposal idx:%d, term:%d, req:%v", d.PeerId(), d.Term(), index, d.Term(), req)
-			if err := d.RaftGroup.Propose(data); err != nil {
-				log.Errorf("proposeRaftCmd err: %s", err.Error())
-			}
-		}
+	index := d.RaftGroup.Raft.RaftLog.LastIndex() + 1
+	d.proposals = append(d.proposals, &proposal{index: index, term: d.Term(), cb: cb})
+	if err = d.RaftGroup.Propose(data); err != nil {
+		log.Errorf("propose msg data err:%v", err.Error())
 	}
 }
 
@@ -752,44 +672,4 @@ func newCompactLogRequest(regionID uint64, peer *metapb.Peer, compactIndex, comp
 		},
 	}
 	return req
-}
-
-// ------------------------------------
-func DebugIterateDB(db *badger.DB) {
-	err := db.View(func(txn *badger.Txn) error {
-		iter := txn.NewIterator(badger.DefaultIteratorOptions)
-		for iter.Rewind(); iter.Valid(); iter.Next() {
-			item := iter.Item()
-			key := item.Key()
-			val, err := item.Value()
-			if err != nil {
-				return err
-			}
-			log.Debugf("iterating {k:%v=>%s, v:%v=>%s}", key, key, val, val)
-		}
-		iter.Close()
-		return nil
-	})
-	if err != nil {
-		log.Errorf("%v", err)
-	}
-}
-
-func DebugGetDBValue(db *badger.DB, key []byte) (val []byte) {
-	err := db.View(func(txn *badger.Txn) error {
-		item, err := txn.Get(key)
-		if err != nil {
-			return err
-		}
-		val, err = item.Value()
-		if err != nil {
-			return err
-		}
-		log.Debugf("debug get {k:%v=>%s, v:%v=>%s}", key, key, val, val)
-		return nil
-	})
-	if err != nil {
-		log.Errorf("debug get value error, key:%v=>%s", key, key)
-	}
-	return val
 }
