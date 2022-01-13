@@ -51,7 +51,7 @@ type PeerStorage struct {
 	Tag string
 }
 
-// NewPeerStorage get the persist raftState from engines and return a peer storage
+// NewPeerStorage get persisted raftState from engines and return a peer storage
 func NewPeerStorage(engines *engine_util.Engines, region *metapb.Region, regionSched chan<- worker.Task, tag string) (*PeerStorage, error) {
 	log.Debugf("%s creating storage for %s", tag, region.String())
 	raftState, err := meta.InitRaftLocalState(engines.Raft, region)
@@ -360,14 +360,13 @@ func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, erro
 	}
 
 	// update raft state
-	ps.raftState.LastTerm = ready.Term
 	if l := len(ready.Entries); l > 0 {
 		ps.raftState.LastIndex = util.MaxUint64(ps.raftState.LastIndex, ready.Entries[l - 1].Index)
+		ps.raftState.LastTerm = ready.Entries[l - 1].Term
 	}
 	if ready.Term != 0 || ready.Commit != 0 {
 		// TODO(wendongbo): performance degradation if we point to inner struct directly?
 		ps.raftState.HardState = &ready.HardState
-
 	}
 	// TODO(wendongbo): can be opt if no update
 	if err := wb.SetMeta(meta.RaftStateKey(ps.region.Id), ps.raftState); err != nil {
@@ -387,7 +386,13 @@ func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, erro
 
 		// handle admin requests
 		if msg.AdminRequest != nil {
-
+			switch msg.AdminRequest.CmdType {
+			case raft_cmdpb.AdminCmdType_CompactLog:
+				ps.applyState.TruncatedState.Index = msg.AdminRequest.CompactLog.CompactIndex
+				ps.applyState.TruncatedState.Term = msg.AdminRequest.CompactLog.CompactTerm
+			default:
+				log.Warnf("unsupported admin request type:%d %s", msg.AdminRequest.CmdType, raft_cmdpb.AdminCmdType_name[int32(msg.AdminRequest.CmdType)])
+			}
 		}
 
 		// handle normal requests
@@ -403,12 +408,11 @@ func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, erro
 		}
 	}
 
+	log.Debugf("peer storage truncatedIdx:%d", ps.truncatedIndex())
+	// update ApplyState.AppliedIndex
 	if l := len(ready.CommittedEntries); l > 0 {
 		ps.applyState.AppliedIndex = util.MaxUint64(ps.applyState.AppliedIndex, ready.CommittedEntries[l-1].Index)
 	}
-
-	log.Debugf("peer storage truncatedIdx:%d", ps.truncatedIndex())
-
 	if err := wb.SetMeta(meta.ApplyStateKey(ps.region.Id), ps.applyState); err != nil {
 		log.Errorf("set apply state meta error:%s", err.Error())
 	}

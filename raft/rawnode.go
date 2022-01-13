@@ -16,7 +16,6 @@ package raft
 
 import (
 	"errors"
-	"github.com/pingcap-incubator/tinykv/log"
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 	"reflect"
 )
@@ -193,7 +192,7 @@ func (rn *RawNode) HasReady() bool {
 	if len(rd.Entries) != 0 || len(rd.CommittedEntries) != 0 || len(rd.Messages) != 0{
 		return true
 	}
-	if len(rd.Snapshot.Data) != 0 {
+	if len(rd.Snapshot.Data) != 0 || rd.Snapshot.Metadata != nil {
 		return true
 	}
 	return false
@@ -203,15 +202,11 @@ func (rn *RawNode) HasReady() bool {
 // last Ready results.
 func (rn *RawNode) Advance(rd Ready) {
 	// Your Code Here (2A).
-	length := len(rd.Entries)
-	if length > 0 {
+	if length := len(rd.Entries); length > 0 {
 		rn.Raft.RaftLog.stabled = max(rn.Raft.RaftLog.stabled, rd.Entries[length-1].Index)
-		//log.Debugf("rawnode[%d] Term:%d advance stable index to:%d", rn.Raft.id, rn.Raft.Term, rn.Raft.RaftLog.stabled)
 	}
-	length = len(rd.CommittedEntries)
-	if length > 0 {
+	if length := len(rd.CommittedEntries); length > 0 {
 		rn.Raft.RaftLog.applied = max(rn.Raft.RaftLog.applied, rd.CommittedEntries[length-1].Index)
-		//log.Debugf("rawnode[%d] Term:%d raw node advance commit index to:%d",  rn.Raft.id, rn.Raft.Term, rn.Raft.RaftLog.applied)
 	}
 
 	// TODO(wendongbo): optimize struct copy
@@ -220,15 +215,14 @@ func (rn *RawNode) Advance(rd Ready) {
 	}
 	// TODO(wendongbo): opt, can we just erase all message?
 	lastEntIdx := len(rd.Messages) - 1
-	if lastEntIdx >= 0  {
-		if reflect.DeepEqual(rn.Raft.msgs[0], rd.Messages[0]) {
-			len1 := len(rn.Raft.msgs)
-			rn.Raft.msgs = rn.Raft.msgs[lastEntIdx + 1:]
-			len2 := len(rn.Raft.msgs)
-			log.Infof("p[%d] term:%d Advance remove msg from raft msgs %v, size:%d->%d", rn.Raft.id, rn.Raft.Term, rd.Messages, len1, len2)
-		}else {
-			log.Infof("p[%d] term:%d Advance failed\n", rn.Raft.id, rn.Raft.Term)
-		}
+	if lastEntIdx >= 0 && reflect.DeepEqual(rn.Raft.msgs[0], rd.Messages[0])  {
+		//len1 := len(rn.Raft.msgs)
+		rn.Raft.msgs = rn.Raft.msgs[lastEntIdx + 1:]
+		//len2 := len(rn.Raft.msgs)
+		//log.Infof("p[%d] term:%d Advance remove msg from raft msgs %v, size:%d->%d", rn.Raft.id, rn.Raft.Term, rd.Messages, len1, len2)
+	}
+	if rd.Snapshot.Metadata != nil {
+
 	}
 }
 

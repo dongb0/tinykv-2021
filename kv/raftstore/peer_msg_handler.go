@@ -83,20 +83,28 @@ func (d *peerMsgHandler) HandleRaftReady() {
 	for _, ent := range rd.CommittedEntries {
 		index := findProposalIndex(ent.Index, ent.Term, d.proposals)
 		if index == ProposalNotFound {
-			log.Warnf("proposal idx:%d term:%d not found", ent.Index, ent.Term)
+			//log.Warnf("peer[%d] term:%d proposal idx:%d term:%d not found", d.PeerId(), d.Term(), ent.Index, ent.Term)
 			continue
 		}
 		doneProposal := d.proposals[index]
 		d.proposals = deleteAt(index, d.proposals)
-		msg := raft_cmdpb.RaftCmdRequest{}
+		var msg raft_cmdpb.RaftCmdRequest
 		if err = msg.Unmarshal(ent.Data); err != nil {
 			log.Errorf("unmarshal msg err:%v", err.Error())
 		}
+		// handle admin request
 		if msg.AdminRequest != nil {
 			log.Warnf("handling AdminRequest")
-			// TODO(wendongbo)
+			switch msg.AdminRequest.CmdType {
+			case raft_cmdpb.AdminCmdType_CompactLog:
+				log.Debugf("peer[%d] term:%d compact entry at index:%d, firstIdx:%d, current applied:%d, lastIdx:%d",
+					d.PeerId(), d.Term(), msg.AdminRequest.CompactLog.CompactIndex, d.peerStorage.truncatedIndex(), d.peerStorage.AppliedIndex(), d.peerStorage.raftState.LastIndex)
+				d.ScheduleCompactLog(msg.AdminRequest.CompactLog.CompactIndex)
+			default:
+				log.Warnf("unsupported admin request type:%d %s", msg.AdminRequest.CmdType, raft_cmdpb.AdminCmdType_name[int32(msg.AdminRequest.CmdType)])
+			}
 		}
-		log.Debugf("handling Normal Request")
+		// handle and generate responses for Normal Request
 		response := newCmdResp()
 		for _, req := range msg.Requests {
 			// TODO(wendongbo): check whether all request are of the same CmdType

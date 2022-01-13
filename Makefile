@@ -113,10 +113,17 @@ project2c:
 	$(GOTEST) ./raft ./kv/test_raftstore -run 2C
 
 project2c0:
-	$(GOTEST) ./kv/test_raftstore -run ^TestOneSnapshot2C$ || true
-
+	$(GOTEST) ./kv/test_raftstore -run ^TestOneSnapshot2C$
 project2c1:
-	$(GOTEST) ./kv/test_raftstore -run ^TestSnapshotRecover2C$ || true
+	$(GOTEST) ./kv/test_raftstore -run ^TestSnapshotRecover2C$
+project2c2:
+	$(GOTEST) ./kv/test_raftstore -run ^TestSnapshotRecoverManyClients2C$
+project2c3:
+	$(GOTEST) ./kv/test_raftstore -run ^TestSnapshotUnreliable2C$
+project2c4:
+	$(GOTEST) ./kv/test_raftstore -run ^TestSnapshotUnreliableRecover2C$
+project2c5:
+	$(GOTEST) ./kv/test_raftstore -run ^TestSnapshotUnreliableRecoverConcurrentPartition2C$
 
 project3: project3a project3b project3c
 
