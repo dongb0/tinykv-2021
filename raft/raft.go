@@ -267,9 +267,9 @@ func (r *Raft) tick() {
 	switch r.State {
 	case StateFollower, StateCandidate:
 		r.electionElapsed++
-		curTimeCount := r.electionTimeout + rand.Intn(r.electionTimeout * 2)
-		if r.electionElapsed >= curTimeCount{
-			logrus.Warnf("peer[%d] term:%d election timeout occur(curTime:%d>timeout:%d)", r.id, r.Term, curTimeCount, r.electionTimeout)
+		randTimeout := r.electionTimeout + rand.Intn(r.electionTimeout * 2)
+		if r.electionElapsed > randTimeout {
+			logrus.Warnf("peer[%d] term:%d election timeout occur(curTime:%d>timeout:%d)", r.id, r.Term, r.electionElapsed, randTimeout)
 			// TODO(wendongbo): why does candidate have higher conflict rate?
 			r.Step(pb.Message{
 				From: r.id,
@@ -454,6 +454,8 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 	// Your Code Here (2A).
 	// Even receive 2 leaders' msg after split(only one is valid leader)
 	// we can safely append any newer entry, log entries will finally converge
+
+	// TODO(wendongbo): do we need to reset election timer here?
 	if m.Term >= r.Term {
 		r.becomeFollower(m.Term, m.From)
 	} else {

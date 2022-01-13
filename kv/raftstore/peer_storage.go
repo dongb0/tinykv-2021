@@ -402,6 +402,8 @@ func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, erro
 				wb.SetCF(req.Put.Cf, req.Put.Key, req.Put.Value)
 			case raft_cmdpb.CmdType_Delete:
 				wb.DeleteCF(req.Delete.Cf, req.Delete.Key)
+			case raft_cmdpb.CmdType_Snap, raft_cmdpb.CmdType_Get:
+				// read operation
 			default:
 				log.Warnf("SaveReadyState unexpected operation: %d, ent:%v", req.CmdType, req)
 			}
