@@ -366,7 +366,10 @@ func (r *Raft) Step(m pb.Message) error {
 			}
 			goto Append
 		case pb.MessageType_MsgSnapshot:
-			goto Snapshot
+			if m.Term >= r.Term {
+				r.becomeFollower(m.Term, m.From)
+				goto Snapshot
+			}
 		}
 	case StateLeader:
 		switch m.MsgType {
@@ -444,7 +447,7 @@ Election:
 	}
 	return nil
 Snapshot:
-
+	r.handleSnapshot(m)
 	return nil
 }
 
@@ -579,7 +582,14 @@ func (r *Raft) handleVoteResponse(m pb.Message) {
 // handleSnapshot handle Snapshot RPC request
 func (r *Raft) handleSnapshot(m pb.Message) {
 	// Your Code Here (2C).
+	if m.Snapshot == nil {
+		pclog.Warnf("no snapshot in message:%v", m)
+		return
+	}
 	pclog.Warnf("handleSnapshot is not implemented")
+	r.RaftLog.pendingSnapshot = m.Snapshot
+	r.RaftLog.maybeCompact()
+
 }
 
 // addNode add a new node to raft group

@@ -221,6 +221,7 @@ func (rn *RawNode) Advance(rd Ready) {
 		//len2 := len(rn.Raft.msgs)
 		//log.Infof("p[%d] term:%d Advance remove msg from raft msgs %v, size:%d->%d", rn.Raft.id, rn.Raft.Term, rd.Messages, len1, len2)
 	}
+	// TODO(wendongbo): it said we need to update apply info in Advance, why?
 	if rd.Snapshot.Metadata != nil {
 
 	}
