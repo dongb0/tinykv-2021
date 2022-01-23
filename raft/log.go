@@ -20,6 +20,8 @@ import (
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 )
 
+const RaftLogEntryNotFound = -10
+
 // RaftLog manage the log entries, its struct look like:
 //
 //  snapshot/first.....applied....committed....stabled.....last
@@ -74,9 +76,7 @@ func newLog(storage Storage) *RaftLog {
 		applied: 0,
 		stabled: lastIndex,
 		entries: entries,
-		pendingSnapshot: &pb.Snapshot{
-			//  TODO(wendongbo)：2C
-		},
+		pendingSnapshot: nil,
 	}
 	return log
 }
@@ -86,19 +86,31 @@ func newLog(storage Storage) *RaftLog {
 // grow unlimitedly in memory
 func (l *RaftLog) maybeCompact() {
 	// Your Code Here (2C).
+	if index := l.getArrayIndex(l.applied); index != RaftLogEntryNotFound && index < len(l.entries){
+
+		l.entries = l.entries[index + 1:]
+	}
+	// TODO(wendongbo): only when we made a snapshot did we compact log in memory
 }
 
 // unstableEntries return all the unstable entries
 func (l *RaftLog) unstableEntries() []pb.Entry {
 	// Your Code Here (2A).
-	res := make([]pb.Entry, 0)
+	//res := make([]pb.Entry, 0)
 	i := l.getArrayIndex(l.stabled + 1)
-	if i != -1 {
-		for end := len(l.entries); i < end; i++ {
-			res = append(res, l.entries[i])
-		}
+	if i != RaftLogEntryNotFound {
+		return l.entries[i:]
 	}
-	return res
+	// all entries in memory are persisted
+	if length := len(l.entries); length == 0 || l.stabled >= l.entries[length-1].Index{
+		return make([]pb.Entry, 0)
+	}
+	// snapshot
+	var err error
+	if l.stabled, err = l.storage.LastIndex(); err != nil {
+		log.Errorf("storage get last index err:%v", err)
+	}
+	return l.entries[:]
 }
 
 // nextEnts returns all the committed but not applied entries
@@ -118,6 +130,9 @@ func (l *RaftLog) nextEnts() (ents []pb.Entry) {
 func (l *RaftLog) LastIndex() uint64 {
 	// Your Code Here (2A).
 	if len(l.entries) == 0 {
+		if lastIndex, err := l.storage.LastIndex(); err != nil {
+			return lastIndex
+		}
 		return l.committed
 	}
 	last := len(l.entries) - 1
@@ -131,50 +146,69 @@ func (l *RaftLog) Term(i uint64) (term uint64, err error) {
 		return 0, nil
 	}
 	idx := l.getArrayIndex(i)
-	if idx != -1 {
+	if idx != RaftLogEntryNotFound {
 		return l.entries[idx].Term, nil
 	}
-	return 0, fmt.Errorf("log entry not found at index[%d]", i)
+	if term, err = l.storage.Term(i); err != nil {
+		if l.pendingSnapshot != nil {
+			return l.pendingSnapshot.Metadata.Term, nil
+		}
+		return 0, fmt.Errorf("log entry not found at index[%d]:%v", i, err)
+	}
+	return term, err
 }
 
-// entsAfterIndex return entries after given index,
-// if index == 0, return all
+// entsAfterIndex return entries after given index(including entries in storage)
+// TODO(wendongbo): read from storage if entries not in memory
 func (l *RaftLog) entsAfterIndex(index uint64) []*pb.Entry {
+	log.Debugf("Raft log generates entries after index:%d begin", index)
 	res := make([]*pb.Entry, 0)
-	if len(l.entries) == 0 {
-		return res
-	}
-	if index < l.entries[0].Index {
-		for i, end := 0, len(l.entries); i < end; i++ {
-			res = append(res, &l.entries[i])
+	if len(l.entries) == 0 || index < l.entries[0].Index {
+		firstIdx, _ := l.storage.FirstIndex()
+		index = max(index, firstIdx)
+		stableEnt, err := l.storage.Entries(index, l.stabled + 1)
+		if err != nil {
+			log.Warnf("RaftLog get stable entries [%d, %d) err:%v", index, l.stabled, err)
+		}
+		log.Debugf("Raft log get stabled entries(len:%d):%v", len(stableEnt), stableEnt)
+		unstableEnt := l.unstableEntries()
+		for i := range stableEnt {
+			res = append(res, &stableEnt[i])
+		}
+		for i := range unstableEnt {
+			res = append(res, &unstableEnt[i])
 		}
 		return res
 	}
-	begin := l.getArrayIndex(index)
-	end := len(l.entries)
-	for ; begin != -1 && begin < end; begin++ {
-		res = append(res, &l.entries[begin])
+	if begin := l.getArrayIndex(index); begin != RaftLogEntryNotFound{
+		end := len(l.entries)
+		for ; begin < end; begin++ {
+			res = append(res, &l.entries[begin])
+		}
 	}
+	log.Debugf("Raft log generates entries after %d complete, len:%d, theSecHalfEntry:%v", index, len(res), res[len(res)/2:])
 	return res
 }
 
 // return matchIndex(entry array index, begin with 0)
 func (l *RaftLog) findMatchEntry(index, logTerm uint64) (matchIndex int, found bool) {
 	if index == 0 {
+		// first no op entry index == 1, hence follower expect find match at index 0
+		// return (-1, true) for follower append index at [matchIndex + 1]
 		return -1, true
 	}
 	idx := l.getArrayIndex(index)
-	if idx != -1 && l.entries[idx].Term == logTerm {
+	if idx != RaftLogEntryNotFound && l.entries[idx].Term == logTerm {
 		return idx, true
 	}
-	return len(l.entries), false
+	return RaftLogEntryNotFound, false
 }
 
 // getArrayIndex returns entries' array index on given parameter [index]
-// return -1 if entry not found
+// return RaftLogEntryNotFound if entry not found
 func (l *RaftLog) getArrayIndex(index uint64) int {
 	if index == 0 || len(l.entries) == 0 {
-		return -1
+		return RaftLogEntryNotFound
 	}
 	lo, hi := 0, len(l.entries) - 1
 	for ; lo <= hi;  {
@@ -187,7 +221,7 @@ func (l *RaftLog) getArrayIndex(index uint64) int {
 			return mid
 		}
 	}
-	return -1
+	return RaftLogEntryNotFound
 }
 
 func (l *RaftLog) getArrayIndexV0(index uint64) int {
@@ -197,5 +231,5 @@ func (l *RaftLog) getArrayIndexV0(index uint64) int {
 			return i
 		}
 	}
-	return -1
+	return RaftLogEntryNotFound
 }

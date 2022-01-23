@@ -16,7 +16,9 @@ package raft
 
 import (
 	"errors"
+	pclog "github.com/pingcap-incubator/tinykv/log"
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
+	log "github.com/sirupsen/logrus"
 	"reflect"
 )
 
@@ -178,6 +180,12 @@ func (rn *RawNode) Ready() Ready {
 		rd.Vote = rn.Raft.Vote
 		rd.Commit = rn.Raft.RaftLog.committed
 	}
+
+	// snapshot
+	if rn.Raft.RaftLog.pendingSnapshot != nil {
+		rd.Snapshot = *rn.Raft.RaftLog.pendingSnapshot
+		pclog.Debugf("snapshot is ready for %v", rd.Snapshot.Metadata)
+	}
 	return rd
 }
 
@@ -216,14 +224,18 @@ func (rn *RawNode) Advance(rd Ready) {
 	// TODO(wendongbo): opt, can we just erase all message?
 	lastEntIdx := len(rd.Messages) - 1
 	if lastEntIdx >= 0 && reflect.DeepEqual(rn.Raft.msgs[0], rd.Messages[0])  {
-		//len1 := len(rn.Raft.msgs)
 		rn.Raft.msgs = rn.Raft.msgs[lastEntIdx + 1:]
-		//len2 := len(rn.Raft.msgs)
-		//log.Infof("p[%d] term:%d Advance remove msg from raft msgs %v, size:%d->%d", rn.Raft.id, rn.Raft.Term, rd.Messages, len1, len2)
 	}
-	// TODO(wendongbo): it said we need to update apply info in Advance, why?
-	if rd.Snapshot.Metadata != nil {
 
+	if rd.Snapshot.Metadata != nil {
+		log.Debugf("TODO update snapshot metadata in Advance")
+		// TODO(wdb): what if new leader override?
+		rn.Raft.RaftLog.applied = max(rn.Raft.RaftLog.applied, rd.Snapshot.Metadata.Index)
+		rn.Raft.RaftLog.committed = max(rn.Raft.RaftLog.committed, rd.Snapshot.Metadata.Index)
+		rn.Raft.RaftLog.applied = max(rn.Raft.RaftLog.applied, rd.Snapshot.Metadata.Index)
+
+		// apply data to engines
+		rn.Raft.RaftLog.pendingSnapshot = nil
 	}
 }
 

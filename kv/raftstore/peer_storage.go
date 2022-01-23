@@ -63,6 +63,7 @@ func NewPeerStorage(engines *engine_util.Engines, region *metapb.Region, regionS
 		return nil, err
 	}
 	if raftState.LastIndex < applyState.AppliedIndex {
+		log.Errorf("peer storage raftState:%v, applyState:%v", raftState, applyState)
 		panic(fmt.Sprintf("%s unexpected raft log index: lastIndex %d < appliedIndex %d",
 			tag, raftState.LastIndex, applyState.AppliedIndex))
 	}
@@ -125,6 +126,7 @@ func (ps *PeerStorage) Entries(low, high uint64) ([]eraftpb.Entry, error) {
 		return buf, nil
 	}
 	// Here means we don't fetch enough entries.
+	log.Errorf("Entries length:%d[want:%d,%d), get:%v", len(buf), low, high, buf)
 	return nil, raft.ErrUnavailable
 }
 
@@ -154,7 +156,7 @@ func (ps *PeerStorage) FirstIndex() (uint64, error) {
 }
 
 func (ps *PeerStorage) Snapshot() (eraftpb.Snapshot, error) {
-	log.Debugf("Snapshot generation begin")
+	log.Debugf("peer storage Snapshot generation begin")
 	var snapshot eraftpb.Snapshot
 	if ps.snapState.StateType == snap.SnapState_Generating {
 		select {
@@ -321,6 +323,30 @@ func (ps *PeerStorage) Append(entries []eraftpb.Entry, raftWB *engine_util.Write
 	return nil
 }
 
+// update state using given index & term
+func (ps *PeerStorage) updateRaftLocalState(index, term uint64) bool {
+	if index > ps.raftState.LastIndex || term > ps.raftState.LastTerm {
+		ps.raftState.LastIndex = index
+		ps.raftState.LastTerm = term
+		return true
+	}
+	return false
+}
+
+func (ps *PeerStorage) updateApplyState(index, term, apply uint64) bool {
+	hasUpdated := false
+	if index > ps.applyState.TruncatedState.Index || term > ps.applyState.TruncatedState.Term {
+		ps.applyState.TruncatedState.Index = index
+		ps.applyState.TruncatedState.Term = term
+		hasUpdated = true
+	}
+	if apply > ps.applyState.AppliedIndex {
+		ps.applyState.AppliedIndex = apply
+		hasUpdated = true
+	}
+	return hasUpdated
+}
+
 // Apply the peer with given snapshot
 func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_util.WriteBatch, raftWB *engine_util.WriteBatch) (*ApplySnapResult, error) {
 	log.Infof("%v begin to apply snapshot", ps.Tag)
@@ -328,12 +354,50 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 	if err := snapData.Unmarshal(snapshot.Data); err != nil {
 		return nil, err
 	}
-
+	// TODO(wdb): maybe only use new Region?
+	log.Debugf("snapshot unmarshal to RaftSnapshotData:%v", snapData.String()) // no KeyVal?
+	log.Debugf("snapshot kv data:%v", snapData.Data)
 	// Hint: things need to do here including: update peer storage state like raftState and applyState, etc,
 	// and send RegionTaskApply task to region worker through ps.regionSched, also remember call ps.clearMeta
 	// and ps.clearExtraData to delete stale data
 	// Your Code Here (2C).
 
+	log.Warnf("TODO: applySnapshot is not implemented yet, meta:%v", snapshot.Metadata)
+	if ps.updateRaftLocalState(snapshot.Metadata.Index, snapshot.Metadata.Term) {
+		log.Debugf("ApplySnapshot update raftState:%v", ps.raftState)
+		err := raftWB.SetMeta(meta.RaftStateKey(ps.region.Id), ps.raftState)
+		if err != nil {
+			log.Error(err)
+			return nil, err
+		}
+	}
+	if ps.updateApplyState(snapshot.Metadata.Index, snapshot.Metadata.Term, snapshot.Metadata.Index) {
+		log.Debugf("ApplySnapshot update applyState:%v", ps.applyState)
+		err := kvWB.SetMeta(meta.ApplyStateKey(ps.region.Id), ps.applyState)
+		if err != nil {
+			log.Error(err)
+			return nil, err
+		}
+	}
+	ch := make(chan bool)
+	task := &runner.RegionTaskApply{
+		RegionId: ps.region.Id,
+		Notifier: ch,
+		SnapMeta: snapshot.Metadata,
+		StartKey: ps.region.StartKey,
+		EndKey: ps.region.EndKey,
+	}
+	// TODO(wendongbo): when do we update region Start&End Key ?
+	log.Debugf("RegionTaskApply begin, region:%v", ps.region)
+	ps.regionSched <- task
+	<-ch
+	log.Debugf("RegionTaskApply complete")
+	ps.clearExtraData(ps.region)
+	if err := ps.clearMeta(kvWB, raftWB); err != nil {
+		return nil, err
+	}
+	raftWB.MustWriteToDB(ps.Engines.Raft)
+	kvWB.MustWriteToDB(ps.Engines.Kv)
 	return nil, nil
 }
 
@@ -347,6 +411,14 @@ func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, erro
 		Region: ps.Region(),
 		PrevRegion: ps.Region(),
 	}
+	if ready.Snapshot.Data != nil || ready.Snapshot.Metadata != nil {
+		var kvWB, raftWB engine_util.WriteBatch
+		if _, err := ps.ApplySnapshot(&ready.Snapshot, &kvWB, &raftWB); err != nil {
+			log.Errorf("peer storage apply snapshot err:%v", err)
+		}
+	}
+
+	// TODO(wendongbo): update write batch logic
 	// save raft log
 	wb := &engine_util.WriteBatch{}
 	log.Debugf("peerStorage SaveReadyState Entries(len:%d):%v" , len(ready.Entries), ready.Entries)
@@ -364,15 +436,15 @@ func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, erro
 		ps.raftState.LastIndex = util.MaxUint64(ps.raftState.LastIndex, ready.Entries[l - 1].Index)
 		ps.raftState.LastTerm = ready.Entries[l - 1].Term
 	}
+
 	if ready.Term != 0 || ready.Commit != 0 {
-		// TODO(wendongbo): performance degradation if we point to inner struct directly?
 		ps.raftState.HardState = &ready.HardState
 	}
 	// TODO(wendongbo): can be opt if no update
 	if err := wb.SetMeta(meta.RaftStateKey(ps.region.Id), ps.raftState); err != nil {
 		log.Errorf("%s", err.Error())
 	}
-	log.Debugf("write raftLocalState:{k:%v,v:%v}", meta.RaftStateKey(ps.region.Id), ps.raftState.String())
+	log.Debugf("write raftLocalState:%v", ps.raftState.String())
 
 	wb.MustWriteToDB(ps.Engines.Raft)
 	wb.Reset()
@@ -410,7 +482,6 @@ func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, erro
 		}
 	}
 
-	log.Debugf("peer storage truncatedIdx:%d", ps.truncatedIndex())
 	// update ApplyState.AppliedIndex
 	if l := len(ready.CommittedEntries); l > 0 {
 		ps.applyState.AppliedIndex = util.MaxUint64(ps.applyState.AppliedIndex, ready.CommittedEntries[l-1].Index)
@@ -418,6 +489,7 @@ func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, erro
 	if err := wb.SetMeta(meta.ApplyStateKey(ps.region.Id), ps.applyState); err != nil {
 		log.Errorf("set apply state meta error:%s", err.Error())
 	}
+	log.Debugf("peer storage applyState:%v", ps.applyState)
 	wb.MustWriteToDB(ps.Engines.Kv)
 
 	log.Debugf("peerStorage SaveReadyState check complete, local state:%v", ps.raftState)

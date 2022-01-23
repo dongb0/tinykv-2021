@@ -16,11 +16,13 @@ package raft
 
 import (
 	"errors"
+	"github.com/pingcap-incubator/tinykv/kv/raftstore/meta"
 	pclog "github.com/pingcap-incubator/tinykv/log"
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 	"github.com/sirupsen/logrus"
 	"log"
 	"math/rand"
+	"time"
 )
 
 // None is a placeholder node ID used when there is no leader.
@@ -210,10 +212,11 @@ func newRaft(c *Config) *Raft {
 // current commit index to the given peer. Returns true if a message was sent.
 func (r *Raft) sendAppend(to uint64) bool {
 	// Your Code Here (2A).
+
 	prevIndex := r.Prs[to].Next - 1
 	logTerm, err := r.RaftLog.Term(prevIndex)
 	if err != nil {
-		return false
+		pclog.Warnf("sendAppend(to:%d) get term at index %d err:%v", to, prevIndex, err)
 	}
 	ent := r.RaftLog.entsAfterIndex(prevIndex + 1)
 	msg := pb.Message{
@@ -226,8 +229,37 @@ func (r *Raft) sendAppend(to uint64) bool {
 		Entries: ent,
 		Commit: r.RaftLog.committed,
 	}
+	// needs snapshot
+	// TODO(wdb): lab 3 may need to change snapshot condition
+	// RaftInitLogIndex + 1 < firstIdx means peer has been compacted
+
+	firstIdx, _ := r.RaftLog.storage.FirstIndex()
+	if len(ent) != 0 {
+		firstIdx = ent[0].Index
+	}
+	needSnap := r.Prs[to].Next < firstIdx && meta.RaftInitLogIndex + 1 < firstIdx
+
+	pclog.Debugf("leader[%d] term:%d firstIdx:%d, to peer[%d] prevIdx:%d, need Snapshot:%t", r.id, r.Term, firstIdx, to, prevIndex, needSnap)
+	if needSnap {
+		msg.MsgType = pb.MessageType_MsgSnapshot
+		// TODO(wendongbo): opt: start from index 5 no nedd to send snapshot?
+		// but we can not distinct it from change conf from index 0
+		pclog.Infof("peer[%d] term:%d generating snapshot", r.id, r.Term)
+		if snapshot, err := r.RaftLog.storage.Snapshot(); err != nil {
+			pclog.Infof("peer[%d] term:%d generate snapshot err:%v", r.id, r.Term, err.Error())
+			return false
+		} else {
+			// TODO(wendongbo): we need entries after Meta.Index
+			pclog.Infof("peer[%d] term:%d generates snapshot complete, meta:%v, data:%v", r.id, r.Term, snapshot.Metadata, snapshot.Data)
+			msg.Snapshot = &snapshot
+			msg.Index = snapshot.Metadata.Index
+			msg.LogTerm = snapshot.Metadata.Term
+			//r.RaftLog.maybeCompact()
+		}
+	}
+	// TODO(wendongbo): send extra snapshot msg with normal append
 	r.msgs = append(r.msgs, msg)
-	pclog.Debugf("leader[%d] term:%d sends append msg to peer[%d], msg:{%s}", r.id, r.Term, to, msg.String())
+	pclog.Debugf("leader[%d] term:%d sends append msg to peer[%d], firstIdx:%d, entryLength:%d, msg:%v", r.id, r.Term, to, firstIdx, len(r.RaftLog.entries), msg.String())
 	return true
 }
 
@@ -267,7 +299,8 @@ func (r *Raft) tick() {
 	switch r.State {
 	case StateFollower, StateCandidate:
 		r.electionElapsed++
-		randTimeout := r.electionTimeout + rand.Intn(r.electionTimeout * 2)
+		rand.Seed(time.Now().UnixNano())
+		randTimeout := r.electionTimeout + rand.Intn(r.electionTimeout / 2) + rand.Intn(r.electionTimeout)  // two rand numbers for more randomization
 		if r.electionElapsed > randTimeout {
 			logrus.Warnf("peer[%d] term:%d election timeout occur(curTime:%d>timeout:%d)", r.id, r.Term, r.electionElapsed, randTimeout)
 			// TODO(wendongbo): why does candidate have higher conflict rate?
@@ -291,6 +324,9 @@ func (r *Raft) becomeFollower(term uint64, lead uint64) {
 	r.Lead = lead
 	r.State = StateFollower
 	r.Vote = lead
+
+	rand.Seed(time.Now().UnixNano())
+	r.electionElapsed = rand.Intn(r.electionTimeout / 5)
 }
 
 // becomeCandidate transform this peer's state to candidate
@@ -301,7 +337,9 @@ func (r *Raft) becomeCandidate() {
 	}
 	r.State = StateCandidate
 	r.Term++
-	r.electionElapsed = 0
+
+	rand.Seed(time.Now().UnixNano())
+	r.electionElapsed = rand.Intn(r.electionTimeout / 2)
 
 	r.rejectCount = 0
 	r.Vote = r.id
@@ -314,18 +352,19 @@ func (r *Raft) becomeLeader() {
 	// NOTE: Leader should propose a noop entry on its term
 	r.Lead = r.id
 	r.State = StateLeader
+	// TODO(wendongbo): can we use Step propose to do this? Tests will not handle propose msg(not sure), just have a try
 	r.RaftLog.entries = append(r.RaftLog.entries, pb.Entry{ Term: r.Term , Index: r.RaftLog.LastIndex() + 1 })
 	r.initPrs()
-	pclog.Infof("peer[%d] comes to power at term %d, with index(commit:%d, apply:%d, len:%d):%d\n", r.id, r.Term, r.RaftLog.committed, r.RaftLog.applied, len(r.RaftLog.entries), r.RaftLog.LastIndex())
+	pclog.Infof("peer[%d] comes to power at term %d, with index %d(commit:%d, apply:%d, len:%d)", r.id, r.Term, r.RaftLog.LastIndex(), r.RaftLog.committed, r.RaftLog.applied, len(r.RaftLog.entries))
 	if len(r.RaftLog.entries) != 0 {
-		index := maxInt(r.RaftLog.getArrayIndex(r.RaftLog.LastIndex()), 0)
+		index := maxInt(r.RaftLog.getArrayIndex(r.RaftLog.LastIndex() - 3), 0)
 		pclog.Debugf("last entries:%v", r.RaftLog.entries[index:])
 	}
 }
 
 // sends heartbeat and append log entries
 func (r *Raft) leaderResponsibility(){
-	//r.broadcastHeartbeat()
+	//r.broadcastHeartbeat()	// test require msg number == xxx, so we cannot send heartbeat
 	// TODO(wendongbo): if we send entries in heartbeat, then no need broadcastEntries later
 	r.broadcastAppendEntries()
 }
@@ -366,29 +405,25 @@ func (r *Raft) Step(m pb.Message) error {
 			}
 			goto Append
 		case pb.MessageType_MsgSnapshot:
-			if m.Term >= r.Term {
-				r.becomeFollower(m.Term, m.From)
-				goto Snapshot
-			}
+			goto Snapshot
 		}
 	case StateLeader:
 		switch m.MsgType {
 		case pb.MessageType_MsgPropose: // append logs to leader's entries
 			for _, ent := range m.Entries {
-				//initIndex := r.RaftLog.LastIndex()
 				ent.Term = r.Term
 				ent.Index = r.RaftLog.LastIndex() + 1
 				r.RaftLog.entries = append(r.RaftLog.entries, *ent)
 				r.Prs[r.id].Match = r.RaftLog.LastIndex()
 				r.Prs[r.id].Next = r.RaftLog.LastIndex() + 1
 				pclog.Debugf("leader[%d] term:%d propose %v At Index %d", r.id, r.Term, ent, ent.Index)
-
 			}
 			if len(r.Prs) != 1 {
 				r.broadcastAppendEntries()
 			} else {
 				r.RaftLog.committed = r.RaftLog.LastIndex()
 			}
+			//r.RaftLog.maybeCompact()
 		case pb.MessageType_MsgBeat:
 			r.broadcastHeartbeat()
 		case pb.MessageType_MsgHeartbeat:
@@ -396,8 +431,10 @@ func (r *Raft) Step(m pb.Message) error {
 			// but split leader and new leader may send heart beat to each other after split recover
 			goto HeartBeat
 		case pb.MessageType_MsgHeartbeatResponse:
+			// TODO(wendongbo): any opt?
 			lastIndex := r.RaftLog.LastIndex()
-			if lastIndex > m.Index {
+			pclog.Debugf("leader[%d] term:%d handling heartbeat response, lastIdx:%d, msg:%v", r.id, r.Term, lastIndex, m)
+			if lastIndex != m.Index {
 				r.sendAppend(m.From)
 			}
 		case pb.MessageType_MsgRequestVote:
@@ -436,6 +473,7 @@ HeartBeat:
 	r.handleHeartbeat(m)
 	return nil
 Append:
+	//r.RaftLog.maybeCompact()
 	r.handleAppendEntries(m)
 	return nil
 Election:
@@ -481,20 +519,20 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 	// accept entries
 	if found {
 		r.followerAppendEntries(matchIndex + 1, &m)
-		end := maxInt(len(m.Entries) - 1, 0)
-		endEntryIdx := m.Index
-		if len(m.Entries) != 0 {
-			endEntryIdx = m.Entries[end].Index
-		}
 		// set commit index to min(m.committed, index of last message entry)
-		r.updateCommit(min(m.Commit, endEntryIdx))
+		var followerCommit uint64 = m.Index
+		if len(m.Entries) != 0 {
+			followerCommit = min(m.Commit, m.Entries[len(m.Entries) - 1].Index)
+		}
+		r.updateCommit(followerCommit)
 		msg.Reject = false
 		msg.Index = r.RaftLog.LastIndex()
 		msg.Commit = r.RaftLog.committed // maybe no need to set
 	} else {
+		// tells leader I don't have entry at m.Index
 		msg.Index = m.Index
 	}
-	pclog.Debugf("peer[%d] term:%d append complete msg:%s", r.id, r.Term, msg.String())
+	pclog.Debugf("peer[%d] term:%d append complete msg:%s, stabled:%d, lastIndex:%d", r.id, r.Term, msg.String(), r.RaftLog.stabled, r.RaftLog.LastIndex())
 }
 
 // handleHeartbeat handle Heartbeat RPC request
@@ -505,6 +543,10 @@ func (r *Raft) handleHeartbeat(m pb.Message) {
 	// ignore stale heartbeat
 	if m.Term < r.Term {
 		pclog.Warnf("peer[%d] t:%d recv unexpected heartbeat from id:%d term:%d\n", r.id, r.Term, m.From, m.Term)
+		// TODO(wendongbo): return response with higher term? should we or new leader return?
+		if r.Lead == r.id {
+			r.sendHeartbeat(m.From)
+		}
 		return
 	}
 	r.becomeFollower(m.Term, m.From)
@@ -512,11 +554,16 @@ func (r *Raft) handleHeartbeat(m pb.Message) {
 	r.electionElapsed = 0
 
 	lastIndex := r.RaftLog.LastIndex()
+	term, err := r.RaftLog.Term(lastIndex)
+	if err != nil {
+		pclog.Errorf("handle heartbeat get term at index:%d err:%v", lastIndex, err)
+	}
 	msg := pb.Message{
 		MsgType: pb.MessageType_MsgHeartbeatResponse,
 		From: r.id,
 		To: m.From,
 		Index: lastIndex,
+		LogTerm: term,
 	}
 	r.msgs = append(r.msgs, msg)
 }
@@ -582,14 +629,56 @@ func (r *Raft) handleVoteResponse(m pb.Message) {
 // handleSnapshot handle Snapshot RPC request
 func (r *Raft) handleSnapshot(m pb.Message) {
 	// Your Code Here (2C).
+	// handle snapshot only update metadata, apply operation is executed in raw node
+	// we just put snapshot in raft log pendingSnapshot field here, wait for ready function to read
+	pclog.Infof("peer[%d] term:%d handling snapshot, meta:%v", r.id, r.Term, m.Snapshot)
 	if m.Snapshot == nil {
 		pclog.Warnf("no snapshot in message:%v", m)
+		// TODO(wendongbo): return should send a response message
 		return
 	}
-	pclog.Warnf("handleSnapshot is not implemented")
-	r.RaftLog.pendingSnapshot = m.Snapshot
-	r.RaftLog.maybeCompact()
+	if m.Snapshot.Metadata.Index < r.RaftLog.committed { // TODO(wendongbo): check commit or applied?
+		// stale snapshot, ignore
+		pclog.Warnf("peer[%d] term:%d recv snapshot at %v, current commit:%d, ignore", r.id, r.Term, m.Snapshot.Metadata, r.RaftLog.committed)
+		return
+	}
+	if m.Term >= r.Term {
+		r.becomeFollower(m.Term, m.From)
+	}
 
+	r.RaftLog.pendingSnapshot = m.Snapshot
+	r.RaftLog.applied = m.Snapshot.Metadata.Index
+	r.RaftLog.committed = m.Snapshot.Metadata.Index
+	if m.Snapshot.Metadata.ConfState.Nodes != nil {
+		r.Prs = make(map[uint64]*Progress)
+		r.votes = make(map[uint64]bool)
+		for _, i := range m.Snapshot.Metadata.ConfState.Nodes {
+			r.Prs[i] = &Progress{Next: 0, Match: 0}
+			r.votes[i] = false
+		}
+	}
+
+	// TODO(wendongbo): merge with handleAppend
+	msg := pb.Message{
+		MsgType: pb.MessageType_MsgAppendResponse,
+		From: r.id,
+		To: m.From,
+		Term: r.Term,
+		Reject: false,
+		Index: r.RaftLog.committed,
+	}
+	if len(m.Entries) != 0 {
+		//r.handleAppendEntries(m)
+		matchIndex, found := r.RaftLog.findMatchEntry(m.Index, m.LogTerm)
+		if !found {
+			matchIndex = -1
+		}
+		r.followerAppendEntries(matchIndex + 1, &m)
+		r.updateCommit(min(m.Commit, m.Entries[len(m.Entries) - 1].Index))
+		msg.Index = r.RaftLog.LastIndex()
+	}
+
+	r.msgs = append(r.msgs, msg)
 }
 
 // addNode add a new node to raft group
@@ -641,19 +730,20 @@ func (r *Raft) broadcastVoteRequest() {
 	}
 }
 
-// TODO(wendongbo): broadcast new heartbeat or append msg to update followers' commit index
-// But performance consideration?
 // checkCommitAt updates leader's committed index
 func (r *Raft) checkCommitAt(index uint64) (newCommit bool){
 	// TODO(wendongbo): check logTerm; Why does Term matter?
 	count := 0
-	for _, v := range r.Prs {
+	// TODO(wdn): debug struct
+	debugPrs := make(map[uint64]Progress)
+	for i, v := range r.Prs {
 		if v.Match >= index {
 			count++
+			debugPrs[i] = *v
 		}
 	}
-	logrus.Infof("leader[%d] term %d checking commit status at index[%d], committed:%d, replica count:%d",
-		r.id, r.Term, index, r.RaftLog.committed, count)
+	logrus.Infof("leader[%d] term %d checking commit status at index[%d], committed:%d, replica count:%d, Prs:%v",
+		r.id, r.Term, index, r.RaftLog.committed, count, debugPrs)
 	logTerm, err := r.RaftLog.Term(index)
 	if err != nil {
 		pclog.Errorf("sendVoteRequest err: %s", err.Error())
@@ -673,13 +763,10 @@ func (r *Raft) updateCommit(committed uint64) {
 }
 
 func (r *Raft) followerAppendEntries(matchIndex int, m *pb.Message){
-	if r.State != StateFollower || len(m.Entries) == 0 {
-		log.Printf("peer[%d] term:%d state:%s failed to append [%s]", r.id, r.Term, r.State, m.String())
-		return
-	}
 	j, end2 := 0, len(m.Entries)
 	// skip match entry
 	conflictIndex := matchIndex
+	// TODO(wendongbo): use binary search to accelerate
 	for end1 := len(r.RaftLog.entries); conflictIndex < end1 && j < end2; conflictIndex, j = conflictIndex+1, j+1 {
 		if r.RaftLog.entries[conflictIndex].Index != m.Entries[j].Index || r.RaftLog.entries[conflictIndex].Term != m.Entries[j].Term {
 			break
@@ -687,7 +774,7 @@ func (r *Raft) followerAppendEntries(matchIndex int, m *pb.Message){
 	}
 	// resolve follower conflict entries
 	if j != len(m.Entries) {
-		// if leader overwrite entries, decrease stabled index to [conflict index - 1]
+		// if leader overwrite entries, decrease stabled index to [conflictIndex - 1]
 		if m.Entries[j].Index <= r.RaftLog.stabled {
 			r.RaftLog.stabled = m.Entries[j].Index - 1
 		}

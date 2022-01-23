@@ -56,6 +56,7 @@ func NewRegionTaskHandler(engines *engine_util.Engines, mgr *snap.SnapManager) *
 }
 
 func (r *regionTaskHandler) Handle(t worker.Task) {
+	//log.Infof("regionTaskHandler receive task, %v", t)
 	switch t.(type) {
 	case *RegionTaskGen:
 		task := t.(*RegionTaskGen)

@@ -461,6 +461,15 @@ func TestOneSnapshot2C(t *testing.T) {
 	cluster := NewTestCluster(3, cfg)
 	cluster.Start()
 	defer cluster.Shutdown()
+	cluster.AddFilter(
+		&PartitionFilter{
+			s1: []uint64{2},
+			s2: []uint64{1, 3},
+		},
+	)
+	time.Sleep(200 * time.Millisecond)
+	cluster.ClearFilters()
+	lead := cluster.LeaderOfRegion(1)
 
 	cf := engine_util.CfLock
 	cluster.MustPutCF(cf, []byte("k1"), []byte("v1"))
@@ -479,41 +488,54 @@ func TestOneSnapshot2C(t *testing.T) {
 			t.Fatalf("unexpected truncated state %v", state.TruncatedState)
 		}
 	}
-
+	parted := []uint64{lead.Id}
+	var majority []uint64
+	for i := uint64(1); i <= 3; i++ {
+		if i != lead.Id {
+			majority = append(majority, i)
+		}
+	}
 	cluster.AddFilter(
 		&PartitionFilter{
-			s1: []uint64{1},
-			s2: []uint64{2, 3},
+			s1: parted,
+			s2: majority,
 		},
 	)
+	log.Debugf("partition %v %v", parted, majority)
 
 	// write some data to trigger snapshot
 	for i := 100; i < 120; i++ {
 		cluster.MustPutCF(cf, []byte(fmt.Sprintf("k%d", i)), []byte(fmt.Sprintf("v%d", i)))
 	}
+	log.Debugf("put complete, try to delete from cluster")
 	cluster.MustDeleteCF(cf, []byte("k2"))
 	time.Sleep(500 * time.Millisecond)
-	MustGetCfNone(cluster.engines[1], cf, []byte("k100"))
+	MustGetCfNone(cluster.engines[lead.Id], cf, []byte("k100"))
 	cluster.ClearFilters()
+	log.Debugf("partition recover [1, 2, 3]")
 
+	log.Debugf("checking peer 1 kv entries")
 	// Now snapshot must applied on
-	MustGetCfEqual(cluster.engines[1], cf, []byte("k1"), []byte("v1"))
-	MustGetCfEqual(cluster.engines[1], cf, []byte("k100"), []byte("v100"))
-	MustGetCfNone(cluster.engines[1], cf, []byte("k2"))
+	MustGetCfEqual(cluster.engines[lead.Id], cf, []byte("k1"), []byte("v1"))
+	MustGetCfEqual(cluster.engines[lead.Id], cf, []byte("k100"), []byte("v100"))
+	MustGetCfNone(cluster.engines[lead.Id], cf, []byte("k2"))
 
-	cluster.StopServer(1)
-	cluster.StartServer(1)
+	log.Debugf("stop peer %d", lead.Id)
+	cluster.StopServer(lead.Id)
+	cluster.StartServer(lead.Id)
+	log.Debugf("restart peer %d", lead.Id)
 
-	MustGetCfEqual(cluster.engines[1], cf, []byte("k1"), []byte("v1"))
-	for _, engine := range cluster.engines {
+	MustGetCfEqual(cluster.engines[lead.Id], cf, []byte("k1"), []byte("v1"))
+	for i, engine := range cluster.engines {
 		state, err := meta.GetApplyState(engine.Kv, 1)
 		if err != nil {
 			t.Fatal(err)
 		}
 		truncatedIdx := state.TruncatedState.Index
 		appliedIdx := state.AppliedIndex
+		log.Debugf("peer[%d] apply state:%v", i, state)
 		if appliedIdx-truncatedIdx > 2*uint64(cfg.RaftLogGcCountLimit) {
-			t.Fatalf("logs were not trimmed (%v - %v > 2*%v)", appliedIdx, truncatedIdx, cfg.RaftLogGcCountLimit)
+			t.Fatalf("peer[%d] logs were not trimmed (%v - %v > 2*%v)", i, appliedIdx, truncatedIdx, cfg.RaftLogGcCountLimit)
 		}
 		log.Debugf("log entries len:%d, applyIdx:%d, truncatedIdx:%d", appliedIdx-truncatedIdx, appliedIdx, truncatedIdx)
 	}

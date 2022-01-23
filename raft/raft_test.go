@@ -1104,9 +1104,13 @@ func TestSlowNodeRestore2C(t *testing.T) {
 	lead := nt.peers[1].(*Raft)
 	nextEnts(lead, nt.storage[1])
 	nt.storage[1].CreateSnapshot(lead.RaftLog.applied, &pb.ConfState{Nodes: nodes(lead)}, nil)
-	nt.storage[1].Compact(lead.RaftLog.applied)
+	nt.storage[1].Compact(lead.RaftLog.applied)	// compact storage entry but RaftLog entry is reserve, and do not apply, what does it used for?
 
 	nt.recover()
+
+	// clear leader's memory log entry to simulate leader restart
+	// force leader read from storage
+	lead.RaftLog.maybeCompact()
 
 	// send heartbeats so that the leader can learn everyone is active.
 	// node 3 will only be considered as active when node 1 receives a reply from it.

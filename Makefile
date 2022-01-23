@@ -112,18 +112,25 @@ project2b:
 project2c:
 	$(GOTEST) ./raft ./kv/test_raftstore -run 2C
 
-project2c0:
-	$(GOTEST) ./kv/test_raftstore -run ^TestOneSnapshot2C$
 project2c1:
-	$(GOTEST) ./kv/test_raftstore -run ^TestSnapshotRecover2C$
+	$(GOTEST) ./kv/test_raftstore -run ^TestOneSnapshot2C$
 project2c2:
-	$(GOTEST) ./kv/test_raftstore -run ^TestSnapshotRecoverManyClients2C$
+	$(GOTEST) ./kv/test_raftstore -run ^TestSnapshotRecover2C$
 project2c3:
-	$(GOTEST) ./kv/test_raftstore -run ^TestSnapshotUnreliable2C$
+	$(GOTEST) ./kv/test_raftstore -run ^TestSnapshotRecoverManyClients2C$
 project2c4:
-	$(GOTEST) ./kv/test_raftstore -run ^TestSnapshotUnreliableRecover2C$
+	$(GOTEST) ./kv/test_raftstore -run ^TestSnapshotUnreliable2C$
 project2c5:
+	$(GOTEST) ./kv/test_raftstore -run ^TestSnapshotUnreliableRecover2C$
+project2c6:
 	$(GOTEST) ./kv/test_raftstore -run ^TestSnapshotUnreliableRecoverConcurrentPartition2C$
+
+project2c-raft:
+	$(GOTEST) ./raft -run ^TestRestoreSnapshot2C$ || true
+	$(GOTEST) ./raft -run ^TestRestoreIgnoreSnapshot2C$ || true
+	$(GOTEST) ./raft -run ^TestProvideSnap2C$ || true
+	$(GOTEST) ./raft -run ^TestRestoreFromSnapMsg2C$ || true
+	$(GOTEST) ./raft -run ^TestSlowNodeRestore2C$ || true
 
 project3: project3a project3b project3c
 

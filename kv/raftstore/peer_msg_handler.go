@@ -79,7 +79,10 @@ func (d *peerMsgHandler) HandleRaftReady() {
 	}
 	d.Send(d.ctx.trans, rd.Messages)
 	d.RaftGroup.Advance(rd)
-
+	if !d.IsLeader() {
+		d.proposals = make([]*proposal, 0)
+		return
+	}
 	for _, ent := range rd.CommittedEntries {
 		index := findProposalIndex(ent.Index, ent.Term, d.proposals)
 		if index == ProposalNotFound {
@@ -94,12 +97,13 @@ func (d *peerMsgHandler) HandleRaftReady() {
 		}
 		// handle admin request
 		if msg.AdminRequest != nil {
-			log.Warnf("handling AdminRequest")
+			log.Debugf("handling AdminRequest")
 			switch msg.AdminRequest.CmdType {
 			case raft_cmdpb.AdminCmdType_CompactLog:
 				log.Debugf("peer[%d] term:%d compact entry at index:%d, firstIdx:%d, current applied:%d, lastIdx:%d",
 					d.PeerId(), d.Term(), msg.AdminRequest.CompactLog.CompactIndex, d.peerStorage.truncatedIndex(), d.peerStorage.AppliedIndex(), d.peerStorage.raftState.LastIndex)
 				d.ScheduleCompactLog(msg.AdminRequest.CompactLog.CompactIndex)
+				// d.RaftGroup.Raft.RaftLog.
 			default:
 				log.Warnf("unsupported admin request type:%d %s", msg.AdminRequest.CmdType, raft_cmdpb.AdminCmdType_name[int32(msg.AdminRequest.CmdType)])
 			}
@@ -520,14 +524,14 @@ func (d *peerMsgHandler) onRaftGCLogTick() {
 
 	appliedIdx := d.peerStorage.AppliedIndex()
 	firstIdx, _ := d.peerStorage.FirstIndex()
-	log.Debugf("peer[%d] term:%d appliedIdx:%d, firstIdx:%d", d.PeerId(), d.Term(), appliedIdx, firstIdx)
+	log.Debugf("peer[%d] term:%d onRafeGCLogTick check appliedIdx:%d, firstIdx:%d", d.PeerId(), d.Term(), appliedIdx, firstIdx)
 	var compactIdx uint64
 	if appliedIdx > firstIdx && appliedIdx-firstIdx >= d.ctx.cfg.RaftLogGcCountLimit {
 		compactIdx = appliedIdx
 	} else {
 		return
 	}
-
+	log.Debugf("peer[%d] begin compacting", d.PeerId())
 	y.Assert(compactIdx > 0)
 	compactIdx -= 1
 	if compactIdx < firstIdx {
@@ -537,7 +541,7 @@ func (d *peerMsgHandler) onRaftGCLogTick() {
 
 	term, err := d.RaftGroup.Raft.RaftLog.Term(compactIdx)
 	if err != nil {
-		log.Fatalf("appliedIdx: %d, firstIdx: %d, compactIdx: %d", appliedIdx, firstIdx, compactIdx)
+		log.Fatalf("get term err:%v, appliedIdx: %d, firstIdx: %d, lastIndex:%d, compactIdx: %d", err.Error(), appliedIdx, firstIdx, d.RaftGroup.Raft.RaftLog.LastIndex(), compactIdx)
 		panic(err)
 	}
 

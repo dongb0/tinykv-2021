@@ -111,6 +111,9 @@ func (ms *MemoryStorage) Entries(lo, hi uint64) ([]pb.Entry, error) {
 	ms.Lock()
 	defer ms.Unlock()
 	offset := ms.ents[0].Index
+	if lo > hi {
+		return nil, errors.New("lower index greater than than higher index")
+	}
 	if lo <= offset {
 		return nil, ErrCompacted
 	}

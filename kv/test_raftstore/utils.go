@@ -119,6 +119,9 @@ func MustGetCfNone(engine *engine_util.Engines, cf string, key []byte) {
 		if err == badger.ErrKeyNotFound {
 			return
 		}
+		if err != nil {
+			log.Debugf("MustGetCfNone get err:%v", err)
+		}
 		SleepMS(20)
 	}
 	panic(fmt.Sprintf("get value %s for key %s", hex.EncodeToString(val), hex.EncodeToString(key)))
