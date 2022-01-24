@@ -422,7 +422,6 @@ func (r *Raft) Step(m pb.Message) error {
 			} else {
 				r.RaftLog.committed = r.RaftLog.LastIndex()
 			}
-			//r.RaftLog.maybeCompact()
 		case pb.MessageType_MsgBeat:
 			r.broadcastHeartbeat()
 		case pb.MessageType_MsgHeartbeat:
@@ -472,7 +471,6 @@ HeartBeat:
 	r.handleHeartbeat(m)
 	return nil
 Append:
-	//r.RaftLog.maybeCompact()
 	r.handleAppendEntries(m)
 	return nil
 Election:
@@ -543,7 +541,7 @@ func (r *Raft) handleHeartbeat(m pb.Message) {
 	if m.Term < r.Term {
 		pclog.Warnf("peer[%d] t:%d recv unexpected heartbeat from id:%d term:%d\n", r.id, r.Term, m.From, m.Term)
 		// TODO(wendongbo): return response with higher term? should we or new leader return?
-		if r.Lead == r.id {
+		if r.Lead == r.id {	// TODO(wdb): maybe no need to do this?
 			r.sendHeartbeat(m.From)
 		}
 		return
@@ -631,30 +629,29 @@ func (r *Raft) handleSnapshot(m pb.Message) {
 	// handle snapshot only update metadata, apply operation is executed in raw node
 	// we just put snapshot in raft log pendingSnapshot field here, wait for ready function to read
 	pclog.Infof("peer[%d] term:%d handling snapshot, meta:%v", r.id, r.Term, m.Snapshot)
-	if m.Snapshot == nil {
-		pclog.Warnf("no snapshot in message:%v", m)
-		// TODO(wendongbo): return should send a response message
-		return
-	}
-	if m.Snapshot.Metadata.Index < r.RaftLog.committed { // TODO(wendongbo): check commit or applied?
-		// stale snapshot, ignore
-		// TODO(wdb): ignore snapshot update, but still needs to check entries
-		pclog.Warnf("peer[%d] term:%d recv snapshot at %v, current commit:%d, ignore", r.id, r.Term, m.Snapshot.Metadata, r.RaftLog.committed)
-		return
-	}
+	//if m.Snapshot == nil {
+	//	pclog.Warnf("no snapshot in message:%v", m)
+	//	return
+	//}
+	//if m.Snapshot.Metadata.Index < r.RaftLog.committed {
+	//	// TODO(wdb): ignore snapshot update, but still needs to check entries
+	//	pclog.Warnf("peer[%d] term:%d recv snapshot at %v, current commit:%d, ignore", r.id, r.Term, m.Snapshot.Metadata, r.RaftLog.committed)
+	//	return
+	//}
 	if m.Term >= r.Term {
 		r.becomeFollower(m.Term, m.From)
 	}
-
-	r.RaftLog.pendingSnapshot = m.Snapshot
-	r.RaftLog.applied = m.Snapshot.Metadata.Index
-	r.RaftLog.committed = m.Snapshot.Metadata.Index
-	if m.Snapshot.Metadata.ConfState.Nodes != nil {
-		r.Prs = make(map[uint64]*Progress)
-		r.votes = make(map[uint64]bool)
-		for _, i := range m.Snapshot.Metadata.ConfState.Nodes {
-			r.Prs[i] = &Progress{Next: 0, Match: 0}
-			r.votes[i] = false
+	if m.Snapshot != nil && m.Snapshot.Metadata.Index > r.RaftLog.committed {
+		r.RaftLog.pendingSnapshot = m.Snapshot
+		r.RaftLog.applied = m.Snapshot.Metadata.Index
+		r.RaftLog.committed = m.Snapshot.Metadata.Index
+		if m.Snapshot.Metadata.ConfState.Nodes != nil {
+			r.Prs = make(map[uint64]*Progress)
+			r.votes = make(map[uint64]bool)
+			for _, i := range m.Snapshot.Metadata.ConfState.Nodes {
+				r.Prs[i] = &Progress{Next: 0, Match: 0}
+				r.votes[i] = false
+			}
 		}
 	}
 
