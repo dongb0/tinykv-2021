@@ -161,7 +161,7 @@ func (l *RaftLog) Term(i uint64) (term uint64, err error) {
 // entsAfterIndex return entries after given index(including entries in storage)
 // TODO(wendongbo): read from storage if entries not in memory
 func (l *RaftLog) entsAfterIndex(index uint64) []*pb.Entry {
-	log.Debugf("Raft log generates entries after index:%d begin", index)
+	//log.Debugf("Raft log generates entries after index:%d begin", index)
 	res := make([]*pb.Entry, 0)
 	if len(l.entries) == 0 || index < l.entries[0].Index {
 		firstIdx, _ := l.storage.FirstIndex()
@@ -170,7 +170,7 @@ func (l *RaftLog) entsAfterIndex(index uint64) []*pb.Entry {
 		if err != nil {
 			log.Warnf("RaftLog get stable entries [%d, %d) err:%v", index, l.stabled, err)
 		}
-		log.Debugf("Raft log get stabled entries(len:%d):%v", len(stableEnt), stableEnt)
+		//log.Debugf("Raft log get stabled entries(len:%d):%v", len(stableEnt), stableEnt)
 		unstableEnt := l.unstableEntries()
 		for i := range stableEnt {
 			res = append(res, &stableEnt[i])
@@ -186,7 +186,7 @@ func (l *RaftLog) entsAfterIndex(index uint64) []*pb.Entry {
 			res = append(res, &l.entries[begin])
 		}
 	}
-	log.Debugf("Raft log generates entries after %d complete, len:%d, theSecHalfEntry:%v", index, len(res), res[len(res)/2:])
+	//log.Debugf("Raft log generates entries after %d complete, len:%d, theSecHalfEntry:%v", index, len(res), res[len(res)/2:])
 	return res
 }
 

@@ -1,7 +1,7 @@
 #! /bin/bash
 test=2c
-begin=1
-end=6
+begin=5
+end=5
 
 num=5
 failCount=0

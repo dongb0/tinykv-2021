@@ -241,7 +241,6 @@ func (r *Raft) sendAppend(to uint64) bool {
 
 	pclog.Debugf("leader[%d] term:%d firstIdx:%d, to peer[%d] prevIdx:%d, need Snapshot:%t", r.id, r.Term, firstIdx, to, prevIndex, needSnap)
 	if needSnap {
-		msg.MsgType = pb.MessageType_MsgSnapshot
 		// TODO(wendongbo): opt: start from index 5 no nedd to send snapshot?
 		// but we can not distinct it from change conf from index 0
 		pclog.Infof("peer[%d] term:%d generating snapshot", r.id, r.Term)
@@ -249,15 +248,15 @@ func (r *Raft) sendAppend(to uint64) bool {
 			pclog.Infof("peer[%d] term:%d generate snapshot err:%v", r.id, r.Term, err.Error())
 			return false
 		} else {
+			msg.MsgType = pb.MessageType_MsgSnapshot
 			// TODO(wendongbo): we need entries after Meta.Index
 			pclog.Infof("peer[%d] term:%d generates snapshot complete, meta:%v, data:%v", r.id, r.Term, snapshot.Metadata, snapshot.Data)
 			msg.Snapshot = &snapshot
 			msg.Index = snapshot.Metadata.Index
 			msg.LogTerm = snapshot.Metadata.Term
-			//r.RaftLog.maybeCompact()
+			msg.Entries = r.RaftLog.entsAfterIndex(msg.Index + 1)
 		}
 	}
-	// TODO(wendongbo): send extra snapshot msg with normal append
 	r.msgs = append(r.msgs, msg)
 	pclog.Debugf("leader[%d] term:%d sends append msg to peer[%d], firstIdx:%d, entryLength:%d, msg:%v", r.id, r.Term, to, firstIdx, len(r.RaftLog.entries), msg.String())
 	return true
@@ -639,6 +638,7 @@ func (r *Raft) handleSnapshot(m pb.Message) {
 	}
 	if m.Snapshot.Metadata.Index < r.RaftLog.committed { // TODO(wendongbo): check commit or applied?
 		// stale snapshot, ignore
+		// TODO(wdb): ignore snapshot update, but still needs to check entries
 		pclog.Warnf("peer[%d] term:%d recv snapshot at %v, current commit:%d, ignore", r.id, r.Term, m.Snapshot.Metadata, r.RaftLog.committed)
 		return
 	}
@@ -658,7 +658,7 @@ func (r *Raft) handleSnapshot(m pb.Message) {
 		}
 	}
 
-	// TODO(wendongbo): merge with handleAppend
+	// TODO(wendongbo): opt, merge with handleAppend
 	msg := pb.Message{
 		MsgType: pb.MessageType_MsgAppendResponse,
 		From: r.id,
@@ -668,7 +668,6 @@ func (r *Raft) handleSnapshot(m pb.Message) {
 		Index: r.RaftLog.committed,
 	}
 	if len(m.Entries) != 0 {
-		//r.handleAppendEntries(m)
 		matchIndex, found := r.RaftLog.findMatchEntry(m.Index, m.LogTerm)
 		if !found {
 			matchIndex = -1

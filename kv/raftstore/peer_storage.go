@@ -487,13 +487,21 @@ func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, erro
 		ps.applyState.AppliedIndex = util.MaxUint64(ps.applyState.AppliedIndex, ready.CommittedEntries[l-1].Index)
 	}
 	if err := wb.SetMeta(meta.ApplyStateKey(ps.region.Id), ps.applyState); err != nil {
-		log.Errorf("set apply state meta error:%s", err.Error())
+		log.Errorf("set apply state meta err:%v", err)
 	}
 	log.Debugf("peer storage applyState:%v", ps.applyState)
-	wb.MustWriteToDB(ps.Engines.Kv)
+
+	regionState := &rspb.RegionLocalState{
+		State: rspb.PeerState_Normal,
+		Region: ps.region,
+	}
+	if err := wb.SetMeta(meta.RegionStateKey(ps.region.Id), regionState); err != nil {
+		log.Errorf("set region local state meta err:%v", err)
+	}
 
 	log.Debugf("peerStorage SaveReadyState check complete, local state:%v", ps.raftState)
 	// TODO(wendongbo):  save RegionLocalState
+	wb.MustWriteToDB(ps.Engines.Kv)
 
 	return res, nil
 }
