@@ -429,10 +429,10 @@ func (r *Raft) Step(m pb.Message) error {
 			// but split leader and new leader may send heart beat to each other after split recover
 			goto HeartBeat
 		case pb.MessageType_MsgHeartbeatResponse:
-			// TODO(wendongbo): any opt?
 			lastIndex := r.RaftLog.LastIndex()
-			pclog.Debugf("leader[%d] term:%d handling heartbeat response, lastIdx:%d, msg:%v", r.id, r.Term, lastIndex, m)
-			if lastIndex != m.Index {
+			lastTerm, _ := r.RaftLog.Term(lastIndex)
+			pclog.Debugf("leader[%d] term:%d handling heartbeat response, lastIdx:%d, msg:%v, need append:%t", r.id, r.Term, lastIndex, m, (lastIndex != m.Index||lastTerm != m.LogTerm))
+			if lastIndex != m.Index || lastTerm != m.LogTerm {
 				r.sendAppend(m.From)
 			}
 		case pb.MessageType_MsgRequestVote:

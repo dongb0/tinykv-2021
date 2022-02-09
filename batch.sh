@@ -1,9 +1,9 @@
 #! /bin/bash
-test=2b
+test=2c
 begin=1
-end=11
+end=6
 
-num=5
+num=20
 failCount=0
 if [ $# -eq 1 ]; then
     num=$1

@@ -150,6 +150,7 @@ func (l *RaftLog) Term(i uint64) (term uint64, err error) {
 		return l.entries[idx].Term, nil
 	}
 	if term, err = l.storage.Term(i); err != nil {
+		// TODO(wdb): should we return pending snapshot??
 		if l.pendingSnapshot != nil {
 			return l.pendingSnapshot.Metadata.Term, nil
 		}
