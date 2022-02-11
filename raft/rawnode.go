@@ -18,7 +18,6 @@ import (
 	"errors"
 	pclog "github.com/pingcap-incubator/tinykv/log"
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
-	log "github.com/sirupsen/logrus"
 	"reflect"
 )
 
@@ -228,7 +227,7 @@ func (rn *RawNode) Advance(rd Ready) {
 	}
 
 	if rd.Snapshot.Metadata != nil {
-		log.Debugf("TODO update snapshot metadata in Advance")
+		//log.Debugf("TODO update snapshot metadata in Advance")
 		// TODO(wdb): what if new leader override?
 		rn.Raft.RaftLog.applied = max(rn.Raft.RaftLog.applied, rd.Snapshot.Metadata.Index)
 		rn.Raft.RaftLog.committed = max(rn.Raft.RaftLog.committed, rd.Snapshot.Metadata.Index)

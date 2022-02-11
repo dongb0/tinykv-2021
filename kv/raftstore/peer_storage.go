@@ -362,6 +362,8 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 	// and ps.clearExtraData to delete stale data
 	// Your Code Here (2C).
 
+	// TODO(wdb): what did we do with snapData? how does it associate with state machine?
+
 	log.Warnf("TODO: applySnapshot is not implemented yet, meta:%v", snapshot.Metadata)
 	if ps.updateRaftLocalState(snapshot.Metadata.Index, snapshot.Metadata.Term) {
 		log.Debugf("ApplySnapshot update raftState:%v", ps.raftState)

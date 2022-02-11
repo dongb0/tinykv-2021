@@ -641,7 +641,9 @@ func (r *Raft) handleSnapshot(m pb.Message) {
 	if m.Term >= r.Term {
 		r.becomeFollower(m.Term, m.From)
 	}
-	if m.Snapshot != nil && m.Snapshot.Metadata.Index > r.RaftLog.committed {
+	//appliedTerm, _ := r.RaftLog.Term(r.RaftLog.applied)
+	if m.Snapshot != nil &&
+		(m.Snapshot.Metadata.Index > r.RaftLog.committed ){
 		r.RaftLog.pendingSnapshot = m.Snapshot
 		r.RaftLog.applied = m.Snapshot.Metadata.Index
 		r.RaftLog.committed = m.Snapshot.Metadata.Index

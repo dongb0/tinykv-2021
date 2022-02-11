@@ -4,6 +4,7 @@ require (
 	github.com/BurntSushi/toml v0.3.1
 	github.com/Connor1996/badger v1.5.1-0.20210202034640-5ff470f827f8
 	github.com/coreos/pkg v0.0.0-20180928190104-399ea9e2e55f
+	github.com/cznic/mathutil v0.0.0-20181122101859-297441e03548
 	github.com/dgraph-io/ristretto v0.1.0 // indirect
 	github.com/docker/go-units v0.4.0
 	github.com/gogo/protobuf v1.3.2

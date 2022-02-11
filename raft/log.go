@@ -91,6 +91,7 @@ func (l *RaftLog) maybeCompact() {
 		l.entries = l.entries[index + 1:]
 	}
 	// TODO(wendongbo): only when we made a snapshot did we compact log in memory
+	// can be used in rawnode advance
 }
 
 // unstableEntries return all the unstable entries
