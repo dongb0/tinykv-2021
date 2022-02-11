@@ -117,7 +117,7 @@ func TestDeleteValue4A(t *testing.T) {
 	txn.DeleteValue([]byte{17, 255, 0})
 	assertDeleteInTxn(t, txn, EncodeKey([]byte{17, 255, 0}, 63454245), engine_util.CfDefault)
 }
-
+// means we begin transaction at ts 40 and commit at ts 42?
 func singleEntry(m *storage.MemStorage) {
 	m.Set(engine_util.CfDefault, EncodeKey([]byte{16, 240}, 40), []byte{1, 2, 3})
 	write := Write{
