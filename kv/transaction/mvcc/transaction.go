@@ -3,7 +3,6 @@ package mvcc
 import (
 	"bytes"
 	"encoding/binary"
-	"github.com/cznic/mathutil"
 	"github.com/pingcap-incubator/tinykv/kv/storage"
 	"github.com/pingcap-incubator/tinykv/kv/util/codec"
 	"github.com/pingcap-incubator/tinykv/kv/util/engine_util"
@@ -56,6 +55,9 @@ func (txn *MvccTxn) GetLock(key []byte) (*Lock, error) {
 	// Your Code Here (4A).
 	lockBytes, err := txn.Reader.GetCF(engine_util.CfLock, key)
 	if err != nil {
+		return nil, err
+	}
+	if lockBytes == nil {
 		return nil, nil
 	}
 	return ParseLock(lockBytes)
@@ -91,11 +93,10 @@ func (txn *MvccTxn) GetValue(key []byte) ([]byte, error) {
 		writeIter.Close()
 	}()
 	iter.Seek(EncodeKey(key, txn.StartTS))
-	// TODO(wdb): iter.valid && key == search key
-	for ; iter.Valid(); iter.Next() {
+	for ; iter.Valid() && bytes.Equal(DecodeUserKey(iter.Item().Key()), key); iter.Next() {
 		// TODO(wdb): opt
 		valStartTs := decodeTimestamp(iter.Item().Key())
-		for writeIter.Seek(EncodeKey(key, txn.StartTS)); writeIter.Valid(); writeIter.Next() {
+		for writeIter.Seek(EncodeKey(key, txn.StartTS)); writeIter.Valid() && bytes.Equal(DecodeUserKey(writeIter.Item().Key()), key); writeIter.Next() {
 			if ts := decodeTimestamp(writeIter.Item().Key()); ts > valStartTs {
 				val, err := writeIter.Item().Value()
 				if err != nil {
@@ -142,7 +143,7 @@ func (txn *MvccTxn) CurrentWrite(key []byte) (*Write, uint64, error) {
 	}
 
 	writeIter := txn.Reader.IterCF(engine_util.CfWrite)
-	writeIter.Seek(EncodeKey(key, mathutil.MaxUint))
+	writeIter.Seek(EncodeKey(key, TsMax))
 	var write *Write
 	var ts uint64 = 0
 	for ; writeIter.Valid() && decodeTimestamp(writeIter.Item().Key()) > txn.StartTS; writeIter.Next(){
@@ -164,9 +165,8 @@ func (txn *MvccTxn) CurrentWrite(key []byte) (*Write, uint64, error) {
 // write's commit timestamp, or an error.
 func (txn *MvccTxn) MostRecentWrite(key []byte) (*Write, uint64, error) {
 	// Your Code Here (4A).
-
 	iter := txn.Reader.IterCF(engine_util.CfWrite)
-	iter.Seek(EncodeKey(key, mathutil.MaxUint))
+	iter.Seek(EncodeKey(key, TsMax))
 	if iter.Valid() && bytes.Equal(DecodeUserKey(iter.Item().Key()), key) {
 		ts := decodeTimestamp(iter.Item().Key())
 		value, err := iter.Item().Value()
